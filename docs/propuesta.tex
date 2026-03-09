@@ -1,0 +1,738 @@
+\documentclass[11pt,a4paper]{article}
+
+% ====================
+% PAQUETES
+% ====================
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{parskip}
+
+\geometry{margin=2.5cm}
+\onehalfspacing
+
+% ====================
+% COLORES CORPORATIVOS
+% ====================
+\definecolor{primary}{HTML}{003366}
+\definecolor{tableheader}{HTML}{E8F0FE}
+\definecolor{alertred}{HTML}{CC0000}
+\definecolor{alertyellow}{HTML}{CC8800}
+
+% ====================
+% CONFIGURACIÓN DE SECCIONES
+% ====================
+\titleformat{\section}{\large\bfseries\color{primary}}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+\titlespacing*{\subsection}{0pt}{8pt}{4pt}
+
+% ====================
+% VARIABLES
+% ====================
+\newcommand{\cliente}{Ing. Manuel Echandía}
+\newcommand{\empresa}{Inmobiliaria Alpamayo / Indeconsult}
+\newcommand{\desarrollador}{Rafael Ramos Huamaní}
+\newcommand{\fecha}{10 de marzo de 2026}
+
+\begin{document}
+
+% =====================================================
+% PORTADA
+% =====================================================
+\begin{center}
+{\LARGE \textbf{Propuesta Técnica y Económica}}\\[0.2cm]
+{\small \textit{Versión 1.0 — Marzo 2026}}\\[0.4cm]
+{\large \textbf{InfoObras Analyzer: Sistema Automatizado de Verificación}}\\
+{\large \textbf{de Experiencia Profesional en Propuestas Técnicas}}\\[0.3cm]
+
+\begin{tabular}{ll}
+\textbf{Cliente:} & \cliente{} — \empresa \\
+\textbf{Desarrollador:} & \desarrollador \\
+\textbf{Fecha:} & \fecha \\
+\end{tabular}
+\end{center}
+
+\vspace{1cm}
+
+% ═══════════════════════════════════════════════════════════════
+% NOTAS INTERNAS (No aparecen en el PDF compilado)
+% ═══════════════════════════════════════════════════════════════
+%
+% CONTEXTO COMERCIAL:
+% - Mismo cliente de APU-Spec (S/. 11,600 aprobado)
+% - Ya existe relación de confianza
+% - Servidor ya adquirido (i9-14900K, Quadro RTX 5000 16GB, 64GB RAM)
+% - Infraestructura IA incluida en el precio (no se cobra aparte)
+% - Manuel valida propuestas técnicas para licitaciones públicas
+% - Proceso actual: 6+ horas con Gemini partiendo PDFs de 2300 págs
+%
+% ARGUMENTOS PRINCIPALES:
+% 1. "Manuel, hoy pierdes medio día por propuesta -- 6 horas mínimo --
+%    y eso sin contar la verificación en InfoObras que puede tomar otro
+%    medio día. El sistema hace todo en 20-40 minutos."
+% 2. "Cada error no detectado es un riesgo de impugnación. El sistema
+%    detecta los 9 tipos de inconsistencia de forma automática."
+% 3. "Ya tenemos el scraping de InfoObras funcionando (PoC validada).
+%    El riesgo técnico más grande ya fue mitigado."
+% 4. "El servidor que compraste ya tiene todo lo necesario para correr
+%    esto. No hay costo adicional de infraestructura."
+%
+% LÍNEA ROJA: NO bajar de S/. 8,500.
+%
+% DIFERENCIADOR vs competencia:
+% - No existe producto comparable en el mercado peruano
+% - Las consultoras hacen esto manualmente
+% - El sistema incluye verificación cruzada con InfoObras (nadie lo tiene)
+%
+% ═══════════════════════════════════════════════════════════════
+
+% =====================================================
+% 1. INTRODUCCIÓN
+% =====================================================
+\section{Introducción}
+
+Presento la propuesta técnica para el desarrollo de \textbf{InfoObras Analyzer}: un sistema integral que automatiza la verificación de experiencia profesional en propuestas técnicas de concursos públicos, incluyendo el cruce de información con el portal \textbf{InfoObras} de la Contraloría General de la República.
+
+La propuesta responde a un problema real y documentado: el análisis manual de propuestas técnicas —con PDFs de más de 2,000 páginas, decenas de certificados por profesional y múltiples criterios de evaluación— consume \textbf{medio día o más} de trabajo concentrado por propuesta, con alto riesgo de error humano y omisión de inconsistencias.
+
+\subsection{Objetivo General}
+
+Desarrollar una \textbf{plataforma web 100\% local} con Inteligencia Artificial que permita:
+\begin{itemize}[leftmargin=*,noitemsep]
+    \item Procesar automáticamente PDFs de propuestas técnicas de \textbf{cualquier tamaño} (2,000+ páginas), sin necesidad de partirlos manualmente.
+    \item Extraer, estructurar y evaluar la experiencia profesional declarada contra los Requisitos Técnicos Mínimos (RTM) de las bases.
+    \item \textbf{Verificar automáticamente} la información declarada contra portales del Estado: InfoObras (principalmente).
+    \item Detectar \textbf{inconsistencias} de forma automática, generando alertas clasificadas por severidad.
+    \item Generar un \textbf{Excel de evaluación completo} con colores y alertas, listo para revisión y archivo.
+    \item \textbf{Privacidad absoluta:} Todo se procesa localmente en el servidor de la empresa; la información nunca sale de las instalaciones.
+\end{itemize}
+
+\subsection{Objetivos Específicos}
+\begin{itemize}[leftmargin=*,noitemsep]
+    \item Automatizar los 5 pasos del proceso actual de evaluación de propuestas (extracción de bases, listado de profesionales, base de datos de experiencias, evaluación RTM y evaluación de años).
+    \item Implementar OCR inteligente para PDFs escaneados con segmentación automática de certificados.
+    \item Integrar un motor de scraping que consulte InfoObras por CUI para verificar estado de obras, paralizaciones y suspensiones.
+    \item Calcular automáticamente \textbf{días efectivos de experiencia}, descontando periodos de paralización, suspensión y COVID.
+    \item Proveer una interfaz web de seguimiento con progreso en tiempo real.
+    \item Exportar resultados en formato Excel con el formato de columnas actual del cliente.
+\end{itemize}
+
+% =====================================================
+% 2. PROBLEMA OPERATIVO ACTUAL
+% =====================================================
+\section{Problema Operativo Actual}
+
+El análisis de propuestas técnicas para concursos públicos es un proceso crítico que determina si un postor cumple con los requisitos exigidos. Actualmente, este proceso se ejecuta de forma manual con asistencia parcial de IA (Gemini), presentando ineficiencias severas.
+
+\subsection{El Proceso Actual en Números}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{5.5cm}|>{\centering\arraybackslash}m{7cm}|}
+\hline
+\textbf{Indicador} & \textbf{Situación Actual} \\
+\hline
+Tamaño del PDF de propuesta & \textbf{\textasciitilde2,300 páginas} \\
+\hline
+Veces que se divide el PDF & \textbf{6 fragmentos} (por límite de contexto de Gemini) \\
+\hline
+Ejecuciones de Gemini por propuesta & \textbf{6+ veces por paso} × 5 pasos = \textbf{30+ ejecuciones} \\
+\hline
+Tiempo mínimo por propuesta & \textbf{6 horas} (sin verificación InfoObras) \\
+\hline
+Verificación InfoObras & \textbf{Completamente manual} \\
+\hline
+Columnas de datos por experiencia & \textbf{27 columnas} (Paso 3) \\
+\hline
+Criterios de evaluación RTM & \textbf{22 columnas} (Paso 4) \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Principales Dolencias Identificadas}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{``Pierdo tiempo partiendo los archivos'':} El PDF debe dividirse manualmente en 6 fragmentos porque Gemini no acepta el documento completo. Cada fragmento se procesa por separado y los resultados se consolidan a mano en Excel.
+    
+    \item \textbf{``Pierdo tiempo corriendo cada paso varias veces'':} Los 5 pasos del proceso (extracción de bases, listado de profesionales, BD de experiencias, evaluación RTM y evaluación de años) deben ejecutarse \textbf{6 veces cada uno} — una por cada fragmento del PDF.
+    
+    \item \textbf{LLM usado como calculadora:} Gemini está calculando fechas, comparando cargos y evaluando cumplimiento de criterios. Estas son \textbf{operaciones determinísticas} que deberían hacerse con código, no con IA — que puede equivocarse o ``inventar'' resultados.
+    
+    \item \textbf{Sin verificación cruzada automatizada:} La consulta a portales del Estado se hace manualmente: entrar al portal, buscar por nombre o CIU, revisar estado de obra, descargar documentos, comparar fechas. Esto puede tomar \textbf{otro medio día adicional} por propuesta.
+    
+    \item \textbf{Riesgo de error:} Con 27 columnas por experiencia, 22 criterios de evaluación, y decenas de certificados por propuesta, la probabilidad de omitir una inconsistencia es alta. Un error no detectado puede derivar en una \textbf{impugnación} o en la \textbf{adjudicación incorrecta} de un concurso.
+    
+    \item \textbf{Folio vs. página:} El número de folio impreso en la hoja no coincide con el número de página del visor PDF. El proceso actual requiere identificar manualmente esta diferencia, lo que genera confusión frecuente.
+\end{itemize}
+
+% =====================================================
+% 3. RESUMEN EJECUTIVO
+% =====================================================
+\section{Resumen Ejecutivo}
+
+InfoObras Analyzer no es un chatbot ni un prompt mejorado. Es un \textbf{pipeline automatizado de verificación documental} que reemplaza los 5 pasos manuales actuales con un flujo continuo: el usuario sube el PDF completo y el sistema entrega el Excel de evaluación con alertas y verificaciones externas incluidas.
+
+\subsection{Situación Actual vs Solución Propuesta}
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{3.2cm}|>{\raggedright\arraybackslash}m{5cm}|>{\raggedright\arraybackslash}m{5cm}|}
+\hline
+\textbf{Aspecto} & \textbf{Proceso Actual} & \textbf{Con InfoObras Analyzer} \\
+\hline
+Ingesta del PDF & Dividir manualmente en 6 partes & PDF completo, sin dividir \\
+\hline
+Extracción de datos & Gemini × 6, copiar a Excel & OCR + LLM local, automático \\
+\hline
+Base de datos (27 cols) & Excel armado a mano & Generada automáticamente en PostgreSQL \\
+\hline
+Evaluación RTM (22 cols) & Gemini compara (puede errar) & Motor de reglas determinístico (sin errores) \\
+\hline
+Verificación InfoObras & Manual: buscar, revisar, anotar & Scraping automático por CUI \\
+\hline
+Cálculo de días efectivos & Manual o por Gemini & Algoritmo exacto con descuentos \\
+\hline
+Alertas & Depende del criterio humano & alertas automáticas por severidad \\
+\hline
+Tiempo por propuesta & 6+ horas (sin InfoObras) & 20--40 minutos (con InfoObras) \\
+\hline
+Riesgo de omisión & Alto & Mínimo \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Validación Técnica ya Realizada}
+
+Se han completado pruebas de viabilidad con resultados positivos:
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{7cm}|>{\centering\arraybackslash}m{4cm}|}
+\hline
+\textbf{Indicador} & \textbf{Resultado} \\
+\hline
+Scraping de InfoObras (PoC funcional) & \textbf{Operativo} \\
+\hline
+Acceso a datos de ejecución por CUI & \textbf{Validado} \\
+\hline
+Extracción de avances mensuales y estados & \textbf{Validado} \\
+\hline
+Detección de obras paralizadas & \textbf{Funcional} \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{Uno de los componentes de mayor riesgo técnico del proyecto (scraping de InfoObras) ya fue validado con datos reales.} El riesgo técnico residual se concentra en la calidad del OCR sobre PDFs escaneados.
+
+% =====================================================
+% 4. SOLUCIÓN PROPUESTA
+% =====================================================
+\section{Solución Propuesta}
+
+InfoObras Analyzer es una \textbf{plataforma web local} que integra OCR, Inteligencia Artificial, motor de reglas determinístico y scraping automatizado en un pipeline unificado. La IA se utiliza \textbf{exclusivamente para extracción de datos} (leer certificados y producir JSON estructurado); toda la lógica de evaluación, comparación y cálculo se ejecuta con \textbf{código Python determinístico}, eliminando el riesgo de que la IA ``invente'' resultados.
+
+\subsection{Pipeline del Sistema}
+
+\begin{center}
+\begin{tabular}{|>{\centering\arraybackslash}m{0.8cm}|>{\raggedright\arraybackslash}m{3.5cm}|>{\raggedright\arraybackslash}m{3.5cm}|>{\raggedright\arraybackslash}m{4.5cm}|}
+\hline
+\textbf{\#} & \textbf{Etapa} & \textbf{Tipo} & \textbf{Función} \\
+\hline
+1 & OCR + Segmentación & Herramienta (Motor OCR) & PDF escaneado $\rightarrow$ texto por página $\rightarrow$ 45 certificados detectados \\
+\hline
+2 & Extracción de Bases & IA (LLM local) & PDF de bases $\rightarrow$ matriz de requisitos por cargo (Paso 1) \\
+\hline
+3 & Extracción de Certificados & IA (LLM local) & Cada certificado $\rightarrow$ JSON con 27 campos (Paso 2 + Paso 3) \\
+\hline
+4 & Motor de Reglas & Código (Python) & Evaluación determinística de 22 criterios RTM + alertas (Paso 4) \\
+\hline
+5 & Verificación Externa & Scraping & Principalmente InfoObras y SUNAT $\rightarrow$ datos oficiales cruzados \\
+\hline
+6 & Cálculo de Días & Código (Python) & Días declarados $-$ paralizaciones $-$ suspensiones $-$ COVID = días efectivos \\
+\hline
+7 & Generación de Reportes & Código & Excel de evaluación con 5 hojas y colores \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Principios de Diseño}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{La IA lee, el código juzga:} La IA local (Qwen2.5 14B, temperatura 0) solo extrae datos de los certificados. Todas las reglas de evaluación, comparaciones de cargos, validaciones de fechas y cálculos de días son \textbf{código Python determinístico}. Esto elimina el riesgo fundamental del proceso actual: que Gemini compare mal un cargo o calcule mal una fecha.
+    
+    \item \textbf{PDF completo, sin partir:} El sistema procesa el PDF sin dividirlo. Internamente, el OCR lee cada página y un segmentador detecta automáticamente el inicio de cada certificado (por patrones textuales como ``CERTIFICADO'', ``CONSTANCIA'', ``SE CERTIFICA QUE''). Los \textasciitilde45 certificados se procesan en paralelo.
+    
+    \item \textbf{Verificación cruzada con fuentes oficiales:} El sistema consulta automáticamente InfoObras por CUI para obtener el estado real de cada obra (ejecutada, paralizada, suspendida), las fechas oficiales y los informes de control. Compara contra lo declarado en el certificado y descuenta periodos no computables.
+    
+    \item \textbf{Privacidad total:} 100\% local, 100\% offline. Sin cloud, sin APIs externas, sin suscripciones. Los expedientes se procesan en el servidor propio de la empresa.
+    
+    \item \textbf{Formato de salida compatible:} El Excel generado respeta la estructura de columnas actual del cliente (27 columnas del Paso 3, 22 del Paso 4), facilitando la transición sin cambiar el flujo de revisión.
+\end{itemize}
+
+% =====================================================
+% 5. ALCANCE FUNCIONAL
+% =====================================================
+\section{Alcance del Proyecto}
+
+\subsection{Módulo 1: OCR + Segmentación de Certificados}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{OCR inteligente:} Motor PaddleOCR con preprocesamiento de imagen (deskewing, denoising, binarización) para PDFs escaneados con calidad variable.
+    \item \textbf{Segmentación automática:} Detección de inicio de certificados por patrones textuales. Un PDF de 2,300 páginas se divide en \textasciitilde45 bloques de 2-4 páginas cada uno, procesables en paralelo.
+    \item \textbf{Fallback OCR:} Si PaddleOCR no alcanza confianza mínima en una página, se aplica Tesseract como motor alternativo.
+\end{itemize}
+
+\subsection{Módulo 2: Extracción con IA Local}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Extracción de Bases (Paso 1):} El LLM lee las bases del concurso y extrae la matriz de requisitos por cargo: profesión, años de colegiado, experiencia mínima, tipo de obra, cargos válidos.
+    \item \textbf{Extracción de Profesionales (Paso 2):} Identifica y lista todos los profesionales propuestos con nombre, profesión, CIP, fecha de colegiatura, especialidad y folio.
+    \item \textbf{Extracción de Experiencias (Paso 3):} Cada certificado segmentado se convierte en un registro JSON con los \textbf{27 campos} definidos: nombre, DNI, proyecto, cargo, empresa, RUC, tipo de obra, fechas, emisión, firmante, folio, CIU, código InfoObras.
+    \item \textbf{Modelo:} Qwen2.5 14B cuantizado (Q4\_K\_M) vía Ollama, temperatura 0 para máxima determinismo.
+\end{itemize}
+
+\subsection{Módulo 3: Motor de Reglas y Evaluación (Pasos 4 y 5)}
+
+Este módulo es \textbf{100\% código Python} — sin IA. Implementa evaluación determinística contra los criterios RTM:
+
+\begin{center}
+\begin{tabular}{|>{\centering\arraybackslash}m{1.2cm}|>{\raggedright\arraybackslash}m{4.5cm}|>{\raggedright\arraybackslash}m{6.5cm}|}
+\hline
+\textbf{Código} & \textbf{Alerta} & \textbf{Lógica} \\
+\hline
+ALT-01 & Fecha fin $>$ emisión certificado & La experiencia termina después de emitido el certificado \\
+\hline
+ALT-02 & Periodo COVID & La experiencia abarca el rango 16/03/2020 -- 31/12/2021 \\
+\hline
+ALT-03 & Antigüedad $>$ 20 años & La experiencia supera los 20 años desde la fecha de propuesta \\
+\hline
+ALT-04 & Empresa posterior al inicio & Fecha de constitución (SUNAT) es posterior al inicio de experiencia \\
+\hline
+ALT-05 & ``A la fecha'' sin fecha fin & El certificado no indica fecha de término explícita \\
+\hline
+ALT-06 & Cargo no válido según bases & El cargo del certificado no coincide con la lista de cargos válidos \\
+\hline
+ALT-07 & Profesión no coincide & La profesión declarada difiere de la requerida por las bases \\
+\hline
+ALT-08 & Tipo de obra no coincide & La tipología de obra no corresponde a la exigida \\
+\hline
+\end{tabular}
+\end{center}
+
+Adicionalmente, el motor evalúa los \textbf{22 criterios del Paso 4}: cumplimiento de profesión, cargo, tipo de obra, tipo de intervención, complejidad y antigüedad, marcando \texttt{CUMPLE} / \texttt{NO CUMPLE} por cada criterio.
+
+\subsection{Módulo 4: Verificación Externa — InfoObras}
+
+\textbf{El módulo de mayor valor estratégico del sistema.} Automatiza completamente lo que hoy se hace manualmente en el portal de InfoObras:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Búsqueda por CUI:} Localiza la obra en InfoObras usando el código CIU extraído del certificado.
+    \item \textbf{Extracción de ficha pública:} Fecha de contrato, inicio, fin, monto, entidad contratante.
+    \item \textbf{Avances mensuales:} Estado de cada mes (Ejecutado / Paralizado / Suspendido) con avance físico y financiero.
+    \item \textbf{Descarga de documentos:} Acta de entrega, valorizaciones, informes de control --- almacenados localmente organizados por obra.
+    \item \textbf{Detección de suspensiones:} Extracción de periodos de suspensión desde informes de control, incluyendo fechas y motivos.
+    \item \textbf{Cruce automático:} Si el certificado declara experiencia continua entre agosto y noviembre 2022, pero InfoObras registra que la obra estuvo \textbf{paralizada desde octubre 2022}, el sistema genera una \textbf{alerta grave} automática.
+\end{itemize}
+
+También se integra verificación complementaria con \textbf{SUNAT:} fecha de inicio de actividades del emisor del certificado (para ALT-04).
+
+\subsection{Módulo 5: Cálculo de Días Efectivos}
+
+Algoritmo determinístico que implementa el cálculo real de días computables:
+
+\begin{center}
+\fbox{\parbox{10cm}{
+\centering
+\textbf{Días Efectivos} = Días Declarados $-$ Días Paralizados $-$ Días de Suspensión $-$ Días COVID
+}}
+\end{center}
+
+Donde:
+\begin{itemize}[leftmargin=*,noitemsep]
+    \item \textbf{Días Paralizados:} Meses con estado ``Paralizado'' en InfoObras, solapados con el periodo declarado.
+    \item \textbf{Días de Suspensión:} Periodos de suspensión formal documentados en informes de control.
+    \item \textbf{Días COVID:} Solapamiento con el periodo 16/03/2020 -- 31/12/2021 (configurable).
+\end{itemize}
+
+\subsection{Módulo 6: Generación de Reportes Excel}
+
+El Excel de salida mantiene la \textbf{estructura de columnas actual del cliente}:
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{4cm}|>{\raggedright\arraybackslash}m{8.5cm}|}
+\hline
+\textbf{Hoja} & \textbf{Contenido} \\
+\hline
+Resumen & Total profesionales, cumplen / no cumplen, alertas críticas \\
+\hline
+Base de Datos (Paso 3) & Las 27 columnas: nombre, DNI, proyecto, cargo, empresa, RUC, fechas, emisión, firmante, folio, CIU, código InfoObras \\
+\hline
+Evaluación RTM (Paso 4) & Las 22 columnas: profesión, cargo, tipo de obra, intervención, complejidad --- cada una con CUMPLE / NO CUMPLE \\
+\hline
+Alertas & Código, severidad, descripción y detalle por profesional \\
+\hline
+Verificación InfoObras & CUI, estado de obra, suspensiones, días descontados, fuentes \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{Colores:} Verde = Cumple · Amarillo = Observación/Revisar · Rojo = No cumple/Alerta crítica.
+
+% =====================================================
+% 6. FLUJO OPERATIVO
+% =====================================================
+\section{Flujo Operativo del Sistema}
+
+\subsection{Uso típico (20--40 minutos total)}
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Carga:} El usuario accede al panel web desde cualquier equipo de la red y sube el PDF de la propuesta técnica + las bases del concurso.
+    \item \textbf{OCR automático:} El sistema procesa las 2,300 páginas sin intervención, detecta y segmenta los \textasciitilde45 certificados.
+    \item \textbf{Extracción:} El LLM local extrae los datos de cada certificado en paralelo, generando la base de datos de 27 columnas automáticamente.
+    \item \textbf{Evaluación:} El motor de reglas evalúa los 22 criterios RTM y genera las alertas.
+    \item \textbf{Verificación:} El scraper consulta InfoObras por cada CUI, descarga documentos y calcula días efectivos.
+    \item \textbf{Resultado:} El sistema genera el Excel completo y un ZIP con los documentos descargados de InfoObras. El usuario descarga todo desde el panel web.
+\end{enumerate}
+
+\textbf{El usuario interviene solo dos veces:} al inicio (subir archivos) y al final (descargar resultados).
+
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+% =====================================================
+% 7. ENTREGABLES
+% =====================================================
+\section{Entregables}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Plataforma web InfoObras Analyzer desplegada:} Sistema accesible desde cualquier equipo de la red, con panel de carga, progreso en tiempo real y descarga de resultados.
+    \item \textbf{Pipeline completo funcional:} OCR $\rightarrow$ Segmentación $\rightarrow$ Extracción $\rightarrow$ Reglas $\rightarrow$ Scraping $\rightarrow$ Excel.
+    \item \textbf{Motor IA Local configurado:} Modelo Qwen2.5 14B optimizado para extracción de certificados peruanos.
+    \item \textbf{Scrapers operativos:} InfoObras y SUNAT (fecha de constitución).
+    \item \textbf{Documentación y capacitación:} Manual de usuario + sesión de capacitación (2 horas).
+\end{itemize}
+
+% =====================================================
+% 8. PLAN DE TRABAJO
+% =====================================================
+\section{Plan de Trabajo y Cronograma}
+
+\subsection{Estrategia de Desarrollo}
+
+El desarrollo sigue una estrategia de \textbf{validación temprana}: la Semana 1 es una prueba de concepto con PDFs reales del cliente. Si el OCR y la segmentación funcionan correctamente, se procede. Si no, se replantea antes de invertir más tiempo.
+
+\subsection{Fases de Implementación (8--9 Semanas)}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{3.8cm}|>{\centering\arraybackslash}m{1.3cm}|>{\raggedright\arraybackslash}m{7.5cm}|}
+\hline
+\textbf{Fase} & \textbf{Sem.} & \textbf{Entregables} \\
+\hline
+Fase 1: PoC + OCR + BD & 1 -- 2 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Motor OCR procesando PDFs reales.
+\item Segmentador de certificados validado.
+\item \textbf{GO/NO-GO:} Validación del OCR
+\end{itemize} \\
+\hline
+Fase 2: Extracción LLM & 3 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Qwen2.5 14B extrayendo datos de certificados.
+\item Prompt calibrado con certificados reales.
+\item Base de datos de 27 columnas generada automáticamente.
+\item \textbf{Validación:} Comparar con Excel actual del cliente.
+\end{itemize} \\
+\hline
+Fase 3: Reglas + Excel & 4 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Motor de alertas implementado.
+\item Evaluación RTM de 22 criterios.
+\item Excel de evaluación generado automáticamente.
+\end{itemize} \\
+\hline
+Fase 4: Scraping InfoObras (1) & 5 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Scraper: búsqueda por CUI, ficha pública, avances mensuales.
+\item Descarga de documentos (actas, valorizaciones).
+\item Detección de obras paralizadas.
+\end{itemize} \\
+\hline
+Fase 5: Scraping (2) + SUNAT & 6 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Informes de control + extracción de suspensiones.
+\item Cálculo de días efectivos integrado.
+\item SUNAT: fecha de constitución por RUC.
+\end{itemize} \\
+\hline
+Fase 6: Frontend + API & 7 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Panel web: upload, progreso en tiempo real, descarga.
+\item API REST + WebSocket.
+\item Integración completa del pipeline.
+\end{itemize} \\
+\hline
+Fase 7: Testing + Deploy & 8 -- 9 &
+\begin{itemize}[leftmargin=*,nosep]
+\item Pruebas con 2--3 propuestas reales del cliente.
+\item Corrección de bugs y ajustes de calibración.
+\item Despliegue en servidor del cliente.
+\item Capacitación (2 horas) + manual de usuario.
+\end{itemize} \\
+\hline
+\end{tabular}
+\end{center}
+
+% =====================================================
+% 9. REQUISITOS TÉCNICOS
+% =====================================================
+\section{Requisitos Técnicos}
+
+\subsection{Servidor del Cliente (ya adquirido)}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{3cm}|>{\raggedright\arraybackslash}m{5cm}|>{\centering\arraybackslash}m{3cm}|}
+\hline
+\textbf{Componente} & \textbf{Especificación} & \textbf{Estado} \\
+\hline
+CPU & Intel Core i9-14900K (24 cores) & ✓ Disponible \\
+\hline
+RAM & 64GB DDR5-6000MHz & ✓ Con mejora \\
+\hline
+GPU & NVIDIA Quadro RTX 5000 16GB & ✓ Disponible (Mejorable) \\
+\hline
+SSD & 3TB NVMe total & ✓ Disponible \\
+\hline
+PSU & Cooler Master Gold 1050W & ✓ Disponible \\
+\hline
+SO & Windows 11 Pro & ✓ Disponible \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{El hardware actual es suficiente para ejecutar el sistema completo.} La GPU actual permite correr el modelo Qwen2.5 14B cuantizado (requiere \textasciitilde10GB de VRAM, disponibles 16GB). El procesamiento será secuencial (OCR primero, luego LLM) para optimizar el uso de VRAM.
+
+\subsection{Insumos Requeridos del Cliente}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{5.5cm}|>{\centering\arraybackslash}m{1.5cm}|>{\raggedright\arraybackslash}m{5.5cm}|}
+\hline
+\textbf{Insumo} & \textbf{Prioridad} & \textbf{Uso} \\
+\hline
+PDFs de propuestas reales (mín. 2--3) & Crítica & Calibración de OCR y extracción (Semana 1--2) \\
+\hline
+Bases del concurso correspondientes & Crítica & Calibración de extracción de requisitos \\
+\hline
+Excel de evaluación actual (ejemplo real) & Alta & Referencia para validar que el sistema genera las mismas columnas \\
+\hline
+\end{tabular}
+\end{center}
+
+% =====================================================
+% 10. CRITERIOS DE VALIDACIÓN
+% =====================================================
+\section{Criterios de Validación y Aceptación}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{5.5cm}|>{\centering\arraybackslash}m{2.5cm}|>{\raggedright\arraybackslash}m{4.5cm}|}
+\hline
+\textbf{Métrica} & \textbf{Meta} & \textbf{Cómo se mide} \\
+\hline
+Precisión OCR (confianza promedio) & $\geq$ 90\% & Score de confianza \\
+\hline
+Certificados detectados por segmentador & 100\% & Todos los certificados identificados \\
+\hline
+Campos extraídos correctamente (27 cols) & $\geq$ 95\% & Comparación con Excel de referencia \\
+\hline
+CUIs encontrados en InfoObras & $\geq$ 85\% & CUIs válidos con datos extraídos \\
+\hline
+Cálculo de días efectivos & 100\% & Sin errores matemáticos \\
+\hline
+Alertas correctas vs revisión manual & $\geq$ 95\% & Validación con datos reales \\
+\hline
+Tiempo total por PDF (2,300 págs) & $<$ 40 min & Incluye OCR, LLM, scraping y Excel \\
+\hline
+Excel abre correctamente & 100\% & Sin errores, formato correcto \\
+\hline
+\end{tabular}
+\end{center}
+
+% =====================================================
+% 11. PROPUESTA ECONÓMICA
+% =====================================================
+\section{Propuesta Económica}
+
+% ─── DESGLOSE REAL (NO MOSTRAR AL CLIENTE) ─────────
+%
+% | Componente                       | Horas | Valor real  | Cobro     |
+% |----------------------------------|-------|------------|----------|
+% | OCR + Segmentación               | 35h   | S/. 3,500  | S/. 1,800 |
+% | Extracción LLM + BD              | 40h   | S/. 4,800  | S/. 2,200 |
+% | Motor de Reglas + Cálculo Días   | 30h   | S/. 3,000  | S/. 1,500 |
+% | Scraping InfoObras + SUNAT + CIP | 40h   | S/. 4,800  | S/. 2,200 |
+% | Excel + Interfaz Web             | 30h   | S/. 3,600  | S/. 1,700 |
+% | TOTAL                            | 175h  | S/.19,700  | S/. 9,600 |
+%
+% Infraestructura IA INCLUIDA en el precio (no se cobra aparte).
+%
+% LÍNEA ROJA: NO bajar de S/. 8,500.
+%
+% ARGUMENTO: "Manuel, el scraping de InfoObras que nadie más automatiza
+% es lo que hace que este sistema sea único. Detecta inconsistencias
+% que ni tú detectarías manualmente porque cruza datos de 3 portales
+% del Estado automáticamente."
+% ──────────────────────────────────────────────────────
+
+\subsection{Desglose de Inversión}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{9.5cm}|>{\centering\arraybackslash}m{3cm}|}
+\hline
+\textbf{Componente} & \textbf{Inversión} \\
+\hline
+\textbf{OCR + Segmentación de Certificados:} Motor OCR con preprocesamiento de imagen (deskewing, denoising, binarización). Segmentador automático de certificados por patrones textuales. Fallback con Tesseract. Procesamiento de PDFs de 2,000+ páginas sin dividir. & S/. 2,000.00 \\
+\hline
+\textbf{Extracción LLM + Base de Datos:} Configuración de Qwen2.5 14B. Ingeniería de prompts calibrada con certificados reales peruanos. Parser JSON robusto. Generación automática de las 27 columnas del Paso 3 y las 5 columnas del Paso 2. Base de datos PostgreSQL con esquema completo. & S/. 2,200.00 \\
+\hline
+\textbf{Motor de Reglas + Cálculo de Días Efectivos:} Implementación de las alertas determinísticas. Evaluación de los 22 criterios RTM del Paso 4. Algoritmo de cálculo de días con descuento de paralizaciones, suspensiones y COVID. Evaluación de años acumulados (Paso 5). & S/. 1,500.00 \\
+\hline
+\textbf{Scraping InfoObras + Verificaciones Externas:} Scraper completo de InfoObras: búsqueda por CUI, ficha pública, avances mensuales, informes de control, descarga de documentos. Scraper SUNAT (fecha de constitución). Verificación cruzada automática con alertas por inconsistencia. & S/. 2,400.00 \\
+\hline
+\textbf{Generación Excel + Interfaz Web:} Excel de evaluación con 5 hojas, colores condicionales y filtros automáticos. Panel web accesible desde cualquier equipo: carga de archivos, progreso en tiempo real (WebSocket), descarga de Excel y ZIP de documentos. & S/. 1,500.00 \\
+\hline
+\textbf{INVERSIÓN TOTAL} & \textbf{S/. 9,600.00} \\
+\hline
+\end{tabular}
+\end{center}
+
+
+
+\subsection{Condiciones de Pago}
+
+El pago se estructura en 2 hitos vinculados a entregables verificables:
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{4.5cm}|>{\centering\arraybackslash}m{1.2cm}|>{\centering\arraybackslash}m{2.5cm}|>{\raggedright\arraybackslash}m{4cm}|}
+\hline
+\textbf{Hito} & \textbf{\%} & \textbf{Monto} & \textbf{Condición} \\
+\hline
+Anticipo al Inicio & 50\% & S/. 4,800.00 & Firma de acuerdo y entrega de PDFs de muestra \\
+\hline
+Entrega Final (Sem. 8--9) & 50\% & S/. 4,800.00 & Sistema desplegado, validado y capacitación completada \\
+\hline
+\end{tabular}
+\end{center}
+
+
+
+
+
+
+
+
+
+% =====================================================
+% 12. ANÁLISIS DE ROI
+% =====================================================
+\section{Retorno de Inversión: Ahorro en Tiempo}
+
+\begin{center}
+\begin{tabular}{|>{\raggedright\arraybackslash}m{5cm}|>{\centering\arraybackslash}m{3.5cm}|>{\centering\arraybackslash}m{3.5cm}|}
+\hline
+\rowcolor{tableheader}
+\textbf{Concepto} & \textbf{Manual (hoy)} & \textbf{Con InfoObras Analyzer} \\
+\hline
+Partir PDF en fragmentos & 15--20 min & < 5 min \\
+\hline
+Extracción de datos (Gemini ×6) & 2--3 horas & 5--8 min \\
+\hline
+Consolidar resultados en Excel & 30--60 min & < 5 min \\
+\hline
+Evaluación RTM (22 criterios) & 1--2 horas & < 1 min \\
+\hline
+Verificación InfoObras & 3--6 horas (o se omite) & 10--15 min \\
+\hline
+\textbf{Total por propuesta} & \textbf{6--12 horas} & \textbf{20--40 minutos} \\
+\hline
+\end{tabular}
+\end{center}
+
+\textbf{Perspectiva:} Las horas anuales recuperadas se pueden dedicar a tareas de mayor valor.
+
+\textbf{Beneficio no cuantificable en tiempo:} La verificación con InfoObras se ejecuta automáticamente en cada análisis. Esto significa que el sistema no solo ahorra tiempo, sino que \textbf{agrega una capa de verificación} a la práctica.
+
+
+
+
+
+
+
+
+
+
+
+
+% =====================================================
+% 13. GARANTÍA Y SOPORTE
+% =====================================================
+\section{Garantía y Soporte}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{90 días de soporte técnico gratuito} posterior a la entrega, para corrección de errores o defectos funcionales.
+    \item \textbf{3 iteraciones de ajuste incluidas:} Calibración de umbrales de detección, reglas de validación, formatos de Excel o prompts de extracción según casuística real.
+    \item \textbf{Mantenimiento de scrapers:} Si InfoObras cambia su estructura web durante el periodo de garantía, los scrapers se actualizan sin costo adicional.
+    \item \textbf{Sesión de capacitación (2 horas)} del flujo operativo completo.
+    \item \textbf{Manual de usuario} con documentación y guía de resolución de problemas.
+\end{itemize}
+
+% =====================================================
+% 14. CONDICIONES COMERCIALES
+% =====================================================
+\section{Condiciones Comerciales}
+
+\subsection{Alcance}
+\begin{itemize}[leftmargin=*]
+    \item El sistema se entrega como plataforma web desplegada en el servidor del cliente.
+    \item Se incluye la configuración completa del pipeline: OCR, LLM, reglas, scraping y Excel.
+    \item Se incluye la verificación cruzada con InfoObras (principalmente).
+    \item El Excel respeta la estructura de columnas actual del cliente.
+\end{itemize}
+
+\subsection{Exclusiones}
+\begin{itemize}[leftmargin=*]
+    \item Análisis de oferta económica (verificación matemática de montos). Cotizable como módulo adicional.
+    \item Dashboard con gráficos avanzados y estadísticas históricas.
+\end{itemize}
+
+\subsection{Riesgos y Mitigación}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{InfoObras cambia estructura web:} Los scrapers están diseñados con selectores resilientes y sistema de caché. Si cambia durante la garantía, se actualiza sin costo. Si cambia después, se cotiza mantenimiento.
+    \item \textbf{OCR falla en documentos muy deteriorados:} Se detecta automáticamente (score de confianza bajo) y se alerta al usuario. No afecta los certificados con buena calidad de escaneo.
+\end{itemize}
+
+% =====================================================
+% CIERRE
+% =====================================================
+\section*{Cierre}
+
+InfoObras Analyzer transforma un proceso de \textbf{6 a 12 horas} de trabajo manual repetitivo en un pipeline de \textbf{20 a 40 minutos} completamente automatizado. No es un prompt mejorado ni un chatbot: es un sistema de verificación documental con motor de reglas determinístico, verificación cruzada contra portales del Estado y generación automática de reportes.
+
+El sistema detecta automáticamente inconsistencias incluyendo la verificación cruzada con InfoObras, que actualmente consume otro medio día adicional de trabajo manual o se omite por falta de tiempo.
+
+El componente de mayor riesgo técnico (scraping de InfoObras) ya fue validado con datos reales.
+Quedo a disposición para resolver cualquier consulta y coordinar el inicio del proyecto.
+
+\end{document}
