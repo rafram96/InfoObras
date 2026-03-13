@@ -1,0 +1,587 @@
+{
+	"components": [
+		{
+			"id": "web-frontend",
+			"title": "Panel Web",
+			"icon": "Monitor",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Framework": "Next.js 14",
+				"Lenguaje": "TypeScript",
+				"UI": "shadcn/ui",
+				"Estilos": "Tailwind CSS"
+			},
+			"connections": [
+				"api-backend"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Interfaz web interna para subir propuestas, monitorear el procesamiento y descargar resultados de evaluación.",
+			"dataFlow": {
+				"sends": [
+					"PDF propuesta técnica",
+					"PDF bases del concurso",
+					"Solicitud de descarga"
+				],
+				"receives": [
+					"Progreso en tiempo real",
+					"Tabla de profesionales con alertas",
+					"Excel y ZIP generados"
+				]
+			},
+			"techDetails": {
+				"type": "frontend",
+				"items": [
+					{
+						"label": "CargaDocumentos",
+						"description": "Subida de PDF de propuesta y bases del concurso"
+					},
+					{
+						"label": "MonitorProgreso",
+						"description": "Barra de progreso en tiempo real via WebSocket por etapa"
+					},
+					{
+						"label": "TablaProfesionales",
+						"description": "Vista de profesionales con alertas coloreadas por severidad"
+					},
+					{
+						"label": "PanelDescarga",
+						"description": "Descarga de Excel evaluado y ZIP con documentos de InfoObras"
+					},
+					{
+						"label": "HistorialProyectos",
+						"description": "Lista de licitaciones procesadas con estado y fecha"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "api-backend",
+			"title": "API Principal",
+			"icon": "Server",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Framework": "FastAPI",
+				"Lenguaje": "Python 3.11",
+				"Tareas": "Celery + Redis",
+				"Tiempo real": "WebSocket nativo"
+			},
+			"connections": [
+				"gestor-documentos",
+				"orquestador-pipeline",
+				"postgresql-db"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Recibe solicitudes del frontend, gestiona autenticación, lanza el pipeline y sirve resultados y descargas.",
+			"dataFlow": {
+				"sends": [
+					"PDFs al gestor",
+					"Comandos al orquestador",
+					"Consultas a base de datos"
+				],
+				"receives": [
+					"Estado del pipeline",
+					"Resultados de evaluación",
+					"Archivos generados"
+				]
+			},
+			"techDetails": {
+				"type": "backend",
+				"items": [
+					{
+						"label": "POST /api/proyectos/subir",
+						"description": "Sube PDF de propuesta y bases del concurso"
+					},
+					{
+						"label": "GET /api/proyectos/{id}/estado",
+						"description": "Consulta estado y progreso del procesamiento"
+					},
+					{
+						"label": "WS /ws/proyectos/{id}",
+						"description": "Progreso en tiempo real via WebSocket por etapa"
+					},
+					{
+						"label": "GET /api/proyectos/{id}/excel",
+						"description": "Descarga el Excel de evaluación generado"
+					},
+					{
+						"label": "GET /api/proyectos/{id}/documentos",
+						"description": "Descarga ZIP con documentos descargados de InfoObras"
+					},
+					{
+						"label": "GET /api/proyectos/historial",
+						"description": "Lista proyectos procesados con filtros por fecha y estado"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "gestor-documentos",
+			"title": "Gestor de Documentos",
+			"icon": "FileText",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"PDF": "PyMuPDF",
+				"Almacenamiento": "Sistema de archivos local",
+				"Validación": "Python puro"
+			},
+			"connections": [
+				"modulo-ocr"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Valida, almacena y prepara los PDFs recibidos para su procesamiento por el pipeline OCR.",
+			"dataFlow": {
+				"sends": [
+					"Páginas renderizadas como imagen",
+					"Ruta de archivos validados"
+				],
+				"receives": [
+					"PDF propuesta crudo",
+					"PDF bases del concurso crudo"
+				]
+			},
+			"techDetails": {
+				"type": "module",
+				"items": [
+					{
+						"label": "ValidadorPDF",
+						"description": "Verifica integridad, tamaño y formato del PDF recibido"
+					},
+					{
+						"label": "RenderizadorPaginas",
+						"description": "Convierte cada página del PDF a imagen PNG a 300 DPI"
+					},
+					{
+						"label": "AlmacenLocal",
+						"description": "Guarda PDFs originales e imágenes en carpeta del proyecto"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "orquestador-pipeline",
+			"title": "Orquestador del Pipeline",
+			"icon": "RefreshCw",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Cola": "Redis",
+				"Workers": "Celery",
+				"Estado": "PostgreSQL"
+			},
+			"connections": [
+				"modulo-ocr",
+				"modulo-extraccion-llm",
+				"modulo-verificacion",
+				"motor-reglas"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Coordina la ejecución secuencial y paralela de los módulos del pipeline, registrando el estado de cada etapa.",
+			"dataFlow": {
+				"sends": [
+					"Tareas a cada módulo",
+					"Actualizaciones de progreso",
+					"Señales de inicio y fin de etapa"
+				],
+				"receives": [
+					"Resultados de cada módulo",
+					"Errores y reintentos",
+					"Confirmación de completado"
+				]
+			},
+			"techDetails": {
+				"type": "pipeline",
+				"items": [
+					{
+						"label": "Etapa 1 - OCR",
+						"description": "Lanza extracción de texto de todas las páginas"
+					},
+					{
+						"label": "Etapa 2 - Segmentación",
+						"description": "Detecta y separa certificados individuales"
+					},
+					{
+						"label": "Etapa 3 - Extracción LLM",
+						"description": "Extrae entidades de cada certificado en paralelo"
+					},
+					{
+						"label": "Etapa 4 - Verificación",
+						"description": "Consulta portales externos por cada profesional"
+					},
+					{
+						"label": "Etapa 5 - Evaluación",
+						"description": "Aplica motor de reglas y genera alertas"
+					},
+					{
+						"label": "Etapa 6 - Generación",
+						"description": "Produce Excel final y empaqueta documentos"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "modulo-ocr",
+			"title": "Módulo OCR",
+			"icon": "Eye",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"OCR Principal": "PaddleOCR",
+				"Fallback": "Tesseract",
+				"Preprocesado": "OpenCV"
+			},
+			"connections": [
+				"modulo-extraccion-llm",
+				"postgresql-db"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Convierte páginas escaneadas en texto, detecta certificados individuales y los segmenta para extracción.",
+			"dataFlow": {
+				"sends": [
+					"Texto extraído por página",
+					"Certificados segmentados con índice de página"
+				],
+				"receives": [
+					"Imágenes PNG de páginas",
+					"Configuración de idioma y precisión"
+				]
+			},
+			"techDetails": {
+				"type": "pipeline",
+				"items": [
+					{
+						"label": "Preprocesado de Imagen",
+						"description": "Denoising, deskewing y binarización de cada página"
+					},
+					{
+						"label": "Motor PaddleOCR",
+						"description": "Extrae texto con score de confianza por línea"
+					},
+					{
+						"label": "Segmentador de Certificados",
+						"description": "Detecta inicio de certificados por patrones textuales"
+					},
+					{
+						"label": "Validador de Confianza",
+						"description": "Rechaza páginas bajo umbral y activa fallback Tesseract"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "modulo-extraccion-llm",
+			"title": "Extracción con LLM",
+			"icon": "Cpu",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Modelo": "Qwen2.5 14B",
+				"Servidor": "Ollama",
+				"Procesamiento": "Batch paralelo asyncio"
+			},
+			"connections": [
+				"postgresql-db"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Extrae entidades estructuradas de certificados y bases del concurso usando LLM local con prompts especializados.",
+			"dataFlow": {
+				"sends": [
+					"JSON de profesional con cargo, fechas, empresa, CIP",
+					"Matriz de requisitos de bases"
+				],
+				"receives": [
+					"Texto OCR de certificados segmentados",
+					"Texto de TDR y bases del concurso"
+				]
+			},
+			"techDetails": {
+				"type": "engine",
+				"items": [
+					{
+						"label": "ExtractorCertificados",
+						"description": "Extrae nombre, cargo, CIP, fechas, empresa y obra por certificado"
+					},
+					{
+						"label": "ExtractorBases",
+						"description": "Lee TDR y extrae requisitos mínimos por cargo y especialidad"
+					},
+					{
+						"label": "ProcesadorBatch",
+						"description": "Procesa ~45 certificados en paralelo con asyncio"
+					},
+					{
+						"label": "ValidadorJSON",
+						"description": "Verifica estructura del JSON extraído y reintenta si hay errores"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "modulo-verificacion",
+			"title": "Verificación Externa",
+			"icon": "Search",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Scraping": "Playwright headless",
+				"Matching": "rapidfuzz",
+				"Async": "asyncio"
+			},
+			"connections": [
+				"portales-estado",
+				"postgresql-db"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Consulta portales del Estado peruano para verificar la experiencia declarada contra registros oficiales.",
+			"dataFlow": {
+				"sends": [
+					"CUI de obra",
+					"RUC de empresa",
+					"Número de CIP"
+				],
+				"receives": [
+					"Estado y avances de obra",
+					"Fecha de constitución de empresa",
+					"Vigencia de colegiatura"
+				]
+			},
+			"techDetails": {
+				"type": "module",
+				"items": [
+					{
+						"label": "ScraperInfoObras",
+						"description": "Ficha pública, avances mensuales, paralizaciones y documentos de obra"
+					},
+					{
+						"label": "ScraperSUNAT",
+						"description": "Fecha de inicio de actividades de empresa por RUC"
+					},
+					{
+						"label": "ScraperCIP",
+						"description": "Vigencia de colegiatura del profesional por número CIP"
+					},
+					{
+						"label": "DescargadorDocumentos",
+						"description": "Descarga actas, valorizaciones e informes de Contraloría"
+					},
+					{
+						"label": "GestorReintentos",
+						"description": "Reintentos con backoff exponencial y control de rate limiting"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "motor-reglas",
+			"title": "Motor de Reglas y Reportes",
+			"icon": "Puzzle",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Lógica": "Python puro determinístico",
+				"Excel": "openpyxl",
+				"Compresión": "zipfile"
+			},
+			"connections": [
+				"postgresql-db"
+			],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Aplica 9 alertas determinísticas, calcula días efectivos, evalúa RTM y genera el Excel final con colores.",
+			"dataFlow": {
+				"sends": [
+					"Alertas por profesional con severidad",
+					"Excel con 5 hojas evaluadas",
+					"ZIP con documentos descargados"
+				],
+				"receives": [
+					"Datos extraídos de profesionales",
+					"Requisitos de bases",
+					"Datos verificados de InfoObras"
+				]
+			},
+			"techDetails": {
+				"type": "engine",
+				"items": [
+					{
+						"label": "ALT-01 a ALT-09",
+						"description": "9 validaciones: fechas, cargo, profesión, COVID, antigüedad, CIP"
+					},
+					{
+						"label": "CalculadorDiasEfectivos",
+						"description": "Días declarados menos paralizaciones, suspensiones y COVID"
+					},
+					{
+						"label": "EvaluadorRTM",
+						"description": "Compara 22 criterios propuesta vs bases: CUMPLE / NO CUMPLE"
+					},
+					{
+						"label": "GeneradorExcel",
+						"description": "5 hojas con colores rojo, amarillo, verde y filtros automáticos"
+					},
+					{
+						"label": "EmpaquetadorDocumentos",
+						"description": "Genera ZIP con todos los documentos descargados de InfoObras"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "portales-estado",
+			"title": "Portales del Estado",
+			"icon": "Shield",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"InfoObras": "infobras.contraloria.gob.pe",
+				"SUNAT": "e-consultaruc.sunat.gob.pe",
+				"CIP": "cip.org.pe"
+			},
+			"connections": [],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Portales gubernamentales externos con registros oficiales de obras públicas, empresas y profesionales.",
+			"dataFlow": {
+				"sends": [
+					"HTML con datos de obra",
+					"Fecha de constitución de empresa",
+					"Estado de colegiatura"
+				],
+				"receives": [
+					"Búsqueda por CUI",
+					"Consulta por RUC",
+					"Consulta por número CIP"
+				]
+			},
+			"techDetails": {
+				"type": "external",
+				"items": [
+					{
+						"label": "InfoObras - Contraloría",
+						"description": "Avance de obras públicas: estado, fechas, suspensiones y documentos"
+					},
+					{
+						"label": "SUNAT RUC",
+						"description": "Registro de empresas: fecha de inicio de actividades"
+					},
+					{
+						"label": "Colegio de Ingenieros del Perú",
+						"description": "Verificación de vigencia de colegiatura profesional"
+					}
+				]
+			},
+			"annotations": []
+		},
+		{
+			"id": "postgresql-db",
+			"title": "Base de Datos",
+			"icon": "Database",
+			"color": "",
+			"borderColor": "",
+			"technologies": {
+				"Motor": "PostgreSQL 16",
+				"ORM": "SQLAlchemy",
+				"Migraciones": "Alembic"
+			},
+			"connections": [],
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"purpose": "Almacena proyectos, certificados, profesionales, alertas, verificaciones externas y logs de procesamiento.",
+			"dataFlow": {
+				"sends": [
+					"Datos de profesionales y certificados",
+					"Alertas y verificaciones almacenadas"
+				],
+				"receives": [
+					"Profesionales extraídos por LLM",
+					"Resultados de verificación externa",
+					"Alertas generadas por motor"
+				]
+			},
+			"techDetails": {
+				"type": "database",
+				"items": [
+					{
+						"label": "proyectos",
+						"description": "id, nombre, pdf_path, estado, total_certificados, fecha_inicio"
+					},
+					{
+						"label": "certificados",
+						"description": "id, proyecto_id, pagina_inicio, pagina_fin, texto_ocr, confianza"
+					},
+					{
+						"label": "profesionales",
+						"description": "id, cert_id, nombre, cargo, cip, fechas, dias_declarados, dias_efectivos"
+					},
+					{
+						"label": "alertas",
+						"description": "id, prof_id, codigo_alerta, severidad, descripcion, detalle_json"
+					},
+					{
+						"label": "verificaciones",
+						"description": "id, prof_id, fuente, resultado_json, estado, fecha_consulta"
+					},
+					{
+						"label": "datos_obra",
+						"description": "id, prof_id, cui, avances_json, paralizaciones_json, documentos_json"
+					}
+				]
+			},
+			"annotations": []
+		}
+	],
+	"connectionLabels": {
+		"web-frontend-api-backend": "HTTP REST / WebSocket",
+		"api-backend-gestor-documentos": "Envío de PDF para validación",
+		"api-backend-orquestador-pipeline": "Inicio de pipeline por proyecto",
+		"api-backend-postgresql-db": "SQLAlchemy ORM",
+		"gestor-documentos-modulo-ocr": "Imágenes PNG por página",
+		"orquestador-pipeline-modulo-ocr": "Tarea Celery etapa OCR",
+		"orquestador-pipeline-modulo-extraccion-llm": "Tarea Celery etapa extracción",
+		"orquestador-pipeline-modulo-verificacion": "Tarea Celery etapa verificación",
+		"orquestador-pipeline-motor-reglas": "Tarea Celery etapa evaluación",
+		"modulo-ocr-modulo-extraccion-llm": "Certificados segmentados en texto",
+		"modulo-ocr-postgresql-db": "INSERT certificados y texto OCR",
+		"modulo-extraccion-llm-postgresql-db": "INSERT profesionales extraídos",
+		"modulo-verificacion-portales-estado": "Playwright headless HTTP",
+		"modulo-verificacion-postgresql-db": "INSERT verificaciones y datos de obra",
+		"motor-reglas-postgresql-db": "INSERT alertas y READ datos completos"
+	}
+}

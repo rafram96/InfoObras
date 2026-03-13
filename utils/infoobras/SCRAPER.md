@@ -432,8 +432,7 @@ Función completa para verificar si un certificado es consistente con Infobras:
 
 ```python
 import re, json, requests
-from datetime import datetime
-from difflib import SequenceMatcher
+from datetime import datetime, date
 
 MES_NUM = {
     "ENERO":1, "FEBRERO":2, "MARZO":3, "ABRIL":4,
@@ -477,12 +476,22 @@ def periodos_solapan(inicio1, fin1, inicio2, fin2) -> bool:
 
 
 def fuzzy_nombre(n1: str, n2: str) -> float:
-    """Score de similitud de nombre entre 0 y 1."""
+    """
+    Similitud por Jaccard sobre tokens — robusto ante orden variable de nombres.
+
+    Ejemplos que SequenceMatcher falla pero Jaccard resuelve:
+      "GAYOSO TARAZONA VICTOR"  vs  "VICTOR AUGUSTO GAYOSO TARAZONA"  → ~0.75
+      "BARRAZA CHIRINOS JULIO"  vs  "JULIO BARRAZA CHIRINOS"          → 1.0
+    """
     from unidecode import unidecode
-    def norm(s):
-        s = unidecode(s).upper().strip()
-        return re.sub(r'[^A-Z\s]', '', s)
-    return SequenceMatcher(None, norm(n1), norm(n2)).ratio()
+    def tokenize(s):
+        s = unidecode(s).upper()
+        return set(re.sub(r'[^A-Z\s]', '', s).split())
+
+    t1, t2 = tokenize(n1), tokenize(n2)
+    if not t1 or not t2:
+        return 0.0
+    return len(t1 & t2) / len(t1 | t2)  # Jaccard
 
 
 def verificar_certificado_infobras(
@@ -569,7 +578,6 @@ def verificar_certificado_infobras(
             if mes_num == 0 or anio == 0:
                 continue
             # Aproximar inicio/fin del mes
-            from datetime import date
             ini_mes = date(anio, mes_num, 1)
             fin_mes = date(anio, mes_num, 28)  # conservador
             if periodos_solapan(fecha_inicio_cert, fecha_fin_cert, ini_mes, fin_mes):
@@ -658,6 +666,35 @@ def verificar_certificado_infobras(
 | P-06 | Probar `/Mapa/LineaTiempo` con timeout mayor | Baja |
 | P-07 | Probar `/Mapa/CuadernoObraDigital` | Media |
 | P-08 | Integrar `verificar_certificado_infobras()` al pipeline principal | Alta |
+
+---
+
+---
+
+## 15. Rate Limiting — Cortesía con el Servidor
+
+Para corridas de producción procesando 50–100 certificados, añadir pausas entre requests evita saturar el servidor y reduce el riesgo de bloqueo por IP.
+
+```python
+import time
+
+# Pausa entre endpoints de la misma obra
+time.sleep(0.5)
+
+# Pausa entre obras distintas
+time.sleep(1.5)  # rango recomendado: 1–2 seg
+```
+
+**Estrategia recomendada para el pipeline principal:**
+
+| Situación | Pausa recomendada |
+|---|---|
+| Entre endpoint [1] y [5] de la misma obra | 0.5 seg |
+| Entre obras distintas (misma corrida) | 1–2 seg |
+| Corrida nocturna / batch grande (>50 obras) | 2–3 seg |
+| Reintento tras error 5xx | 5 seg (exponential backoff) |
+
+> **Nota:** Infobras no tiene rate limiting explícito documentado, pero es un portal público de Contraloría con infraestructura limitada. Ser conservador protege tanto el servicio como el acceso continuado del sistema.
 
 ---
 
