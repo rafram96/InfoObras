@@ -2,3 +2,4 @@ venv/
 docs/transcrip/
 utils/tools/horario
 docs/desarrollo
+.claude/
