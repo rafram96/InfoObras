@@ -68,10 +68,9 @@ PDF completo (~2300 págs.)
         │
         ▼
    ┌──────────────────────┐
-   │ Verificación externa  │  ← Playwright (scraping)
-   │ ├── Infobras          │
-   │ ├── SUNAT RUC         │
-   │ └── Colegio Prof.     │
+   │ Verificación externa │  ← Playwright (scraping)
+   │ ├── Infobras         │
+   │ ├── SUNAT RUC        │
    └────┬─────────────────┘
         │
         ▼
