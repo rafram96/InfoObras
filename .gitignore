@@ -21,7 +21,8 @@ build/
 .env
 *.env.local
 
-# Desarrollo
+# Desarrollo / PoCs generados
 docs/transcrip/
 utils/tools/horario
 docs/desarrollo
+utils/**/*.html
