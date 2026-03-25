@@ -17,12 +17,14 @@ El problema que resuelve: el análisis manual de una propuesta toma 6-12 horas. 
 - Servidor del cliente: `D:\proyectos\motor-OCR`
 - Python 3.11, PaddleOCR, GPU NVIDIA Quadro RTX 5000 16GB
 - Output en: `D:\proyectos\infoobras\ocr_output\{nombre_pdf}\`
+- Actualmente los outputs lo tengo en la carpeta data de este proyecto
 - **No tocar — funciona y tiene dependencias muy frágiles**
 
 ### Este repo (Alpamayo-InfoObras)
 - Repo local: `C:\Users\Holbi\Documents\Freelance\Alpamayo-InfoObras`
 - Servidor del cliente: por definir
 - Python 3.12, sin dependencias de ML
+- Solamente se corre cosas Python aquí, nada de LLM's que eso se prueba en el servidor
 
 ## Servidor del cliente
 - OS: Windows 11 Pro
@@ -123,10 +125,10 @@ Colores: Verde = Cumple · Amarillo = Observación · Rojo = No cumple/Alerta cr
 - Uso: evaluación de propuestas técnicas en concursos públicos de supervisión de obras hospitalarias
 
 ## Convenciones
-- Idioma del código: inglés (variables, funciones, clases)
+- Idioma del código: espanol (variables, funciones, clases)
 - Idioma de comentarios y docs: español
 - Idioma de commits: español
-- Formato de commits: descripción corta y directa
+- Formato de commits: descripción cortisima (usar formato Feat, Fix, Debug, etc)
 
 ## Comandos útiles
 ```bash

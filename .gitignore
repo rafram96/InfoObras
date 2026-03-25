@@ -1,5 +1,27 @@
 venv/
+.claude/
+
+# Datos del cliente — nunca subir
+data/
+ocr_output/
+
+# Resultados generados
+*.xlsx
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# Entorno
+.env
+*.env.local
+
+# Desarrollo
 docs/transcrip/
 utils/tools/horario
 docs/desarrollo
-.claude/
