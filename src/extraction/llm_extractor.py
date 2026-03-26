@@ -17,7 +17,7 @@ _PASO2_CAMPOS = {"nombre", "dni", "tipo_colegio", "registro_colegio", "fecha_reg
 
 # Campos obligatorios de cada experiencia en Paso 3
 _PASO3_CAMPOS = {
-    "proyecto", "cargo", "empresa_emisora", "ruc", "cui",
+    "proyecto", "cargo", "empresa_emisora", "ruc",
     "fecha_inicio", "fecha_fin", "fecha_emision", "firmante",
     "cargo_firmante", "folio",
 }
@@ -187,30 +187,60 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
         # Agotó intentos — devuelve lo que tenga con flag de revisión
         result["_needs_review"] = True
 
+    # Problema 1: si registro_colegio tiene 7+ dígitos, es probablemente un CUI
+    # (los registros CIP/CAP tienen 4-6 dígitos) → descarta y marca para revisión
+    registro = result.get("registro_colegio")
+    if isinstance(registro, str):
+        solo_digitos = re.sub(r"\D", "", registro)
+        if len(solo_digitos) >= 7:
+            result["_registro_sospechoso"] = registro
+            result["registro_colegio"] = None
+            result["_needs_review"] = True
+
     result["_cargo"] = block.cargo
     result["_numero"] = block.numero
     result["_paginas"] = block.page_ranges
     return result
 
 
-def extract_experiences(block: ProfessionalBlock, professional_name: str) -> dict:
+def _extraer_experiencias_de_texto(texto: str, professional_name: str) -> dict | None:
     """
-    Paso 3: extrae todos los certificados/constancias de experiencia.
-    Usa el bloque 2 (constancias individuales) como fuente primaria.
-    Normaliza campos y reintenta si el schema es inválido.
+    Llama al LLM con el texto dado y retorna el resultado normalizado,
+    o None si el schema es inválido tras los reintentos.
     """
-    texto = _texto_paso3(block)
     prompt = PASO3_PROMPT.format(nombre=professional_name, texto=texto)
-
     for intento in range(1, 3):
         result = call_llm(prompt)
         if _validar_paso3(result):
             return _normalizar_paso3(result)
         if intento < 2:
             print(f" [schema inválido exp, reintentando]", end="", flush=True)
+    return None
 
-    # Schema inválido tras reintentos — retorna vacío con flag
-    return {"experiencias": [], "_needs_review": True}
+
+def extract_experiences(block: ProfessionalBlock, professional_name: str) -> dict:
+    """
+    Paso 3: extrae todos los certificados/constancias de experiencia.
+    Usa el bloque 2 (constancias individuales) como fuente primaria.
+    Problema 3: si bloque 2 devuelve lista vacía, reintenta con bloque 1 (ANEXO 16).
+    Normaliza campos y reintenta si el schema es inválido.
+    """
+    texto_principal = _texto_paso3(block)
+    resultado = _extraer_experiencias_de_texto(texto_principal, professional_name)
+
+    if resultado is None:
+        # Schema inválido tras reintentos
+        return {"experiencias": [], "_needs_review": True}
+
+    # Problema 3: bloque 2 devolvió lista vacía → fallback a bloque 1 (ANEXO 16)
+    if not resultado.get("experiencias") and len(block.block_texts) >= 3:
+        texto_fallback = block.block_texts[1][:_MAX_TEXT_CHARS]
+        print(f" [exp vacías en bloque 3, reintentando con bloque 2 (ANEXO 16)]", end="", flush=True)
+        resultado_fallback = _extraer_experiencias_de_texto(texto_fallback, professional_name)
+        if resultado_fallback and resultado_fallback.get("experiencias"):
+            return resultado_fallback
+
+    return resultado
 
 
 def extract_block(block: ProfessionalBlock) -> dict:

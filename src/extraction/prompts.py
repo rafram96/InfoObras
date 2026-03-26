@@ -50,10 +50,6 @@ INSTRUCCIONES campo por campo:
 - cargo: cargo desempeñado en ese proyecto (Coordinador de Supervisión, Jefe de Supervisión, Especialista en Estructuras, etc.)
 - empresa_emisora: nombre de la empresa o consorcio que EMITE la constancia (quien firma el papel)
 - ruc: RUC de la empresa emisora si aparece (11 dígitos)
-- cui: Código Único de Inversiones del proyecto de la constancia.
-  ATENCIÓN: el CUI que aparece en la declaración jurada inicial (ANEXO 16) es el del proyecto LICITADO, NO de las experiencias pasadas.
-  Solo extrae el CUI si aparece dentro de la constancia/certificado individual mismo (por ejemplo: "CUI 2345678" o "código 2345678").
-  Si no aparece explícitamente en la constancia, usa null.
 - fecha_inicio: fecha de inicio del servicio (formato original del documento)
 - fecha_fin: fecha de fin del servicio. Si dice "a la fecha" o "a la actualidad", usa el texto "a la fecha"
 - fecha_emision: fecha en que fue emitido el certificado (suele aparecer al final del documento con "Lima, DD de mes del AAAA")
@@ -72,7 +68,6 @@ Si no hay certificados en el texto, devuelve la estructura con lista vacía.
       "cargo": "...",
       "empresa_emisora": "...",
       "ruc": null,
-      "cui": null,
       "fecha_inicio": "...",
       "fecha_fin": "...",
       "fecha_emision": "...",
