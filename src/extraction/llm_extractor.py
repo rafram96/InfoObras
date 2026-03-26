@@ -3,7 +3,8 @@ Orquesta la extracción LLM sobre un ProfessionalBlock.
 Paso 2: datos del profesional (cabecera)
 Paso 3: lista de experiencias (certificados)
 
-Incluye validación de schema y normalización de campos.
+Incluye validación de schema, normalización de campos y filtro
+de páginas irrelevantes (contratos, resoluciones, SEACE).
 """
 import re
 from src.extraction.models import ProfessionalBlock
@@ -11,6 +12,102 @@ from src.extraction.ollama_client import call_llm
 from src.extraction.prompts import PASO2_PROMPT, PASO3_PROMPT
 
 _MAX_TEXT_CHARS = 40_000
+
+# ---------------------------------------------------------------------------
+# Filtro de páginas irrelevantes (Opción C)
+# ---------------------------------------------------------------------------
+# Algunos profesionales (e.g. Coordinadores BIM) tienen bloques con 20+
+# páginas de contratos de obra, resoluciones administrativas y páginas SEACE
+# mezcladas con sus certificados reales.  El LLM de 14B no puede ignorar
+# tanto ruido y falla el schema.  Este filtro descarta esas páginas ANTES
+# de enviar el texto al LLM.
+
+# Patrones que identifican páginas de contrato / legal / administrativo
+_RE_EXCLUIR = re.compile(
+    r"CL[ÁA]USULA"
+    r"|CONTRATO\s+N[°º\.]"
+    r"|PENALIDAD"
+    r"|SE\s+RESUELVE"
+    r"|VALORIZACI[ÓO]N"
+    r"|Ley\s+(?:N.\s*30225|de\s+Contrataciones)"
+    r"|CONSIDERANDO:"
+    r"|VISTO:"
+    r"|El\s+Contratista\s+(?:deber[áa]|est[áa]\s+obligado|tiene\s+la\s+obligaci[óo]n)"
+    r"|LA\s+ENTIDAD\s+(?:se\s+obliga|puede\s+solicitar|no\s+asume)"
+    r"|RECEPCI[ÓO]N\s+DE\s+LA\s+OBRA"
+    r"|LIQUIDACI[ÓO]N\s+(?:FINAL|DEL\s+CONTRATO|DE\s+OBRA)"
+    r"|PROGRAMA\s+DE\s+TRABAJOS"
+    r"|Objeto\s+de\s+Contrataci[óo]n"
+    r"|Bases\s+Integradas"
+    r"|Adjudicaci[óo]n\s+Simplificada",
+    re.IGNORECASE,
+)
+
+# Patrones que identifican páginas útiles (certificados, ANEXO 16, etc.)
+_RE_INCLUIR = re.compile(
+    r"CERTIFICA"
+    r"|CONSTANCIA"
+    r"|ha\s+prestado\s+servicios"
+    r"|ANEXO\s+N[°º]"
+    r"|identificado\s+con\s+documento"
+    r"|desempe[ñn][áa]ndose\s+como"
+    r"|Calificaciones\s+y\s+Experiencia"
+    r"|Formaci[óo]n\s+acad[ée]mica",
+    re.IGNORECASE,
+)
+
+
+def _filtrar_paginas(texto_bloque: str) -> str:
+    """
+    Filtra páginas irrelevantes (contratos, resoluciones, SEACE)
+    de un bloque de texto OCR.
+
+    Lógica por página:
+      - Páginas cortas (<200 chars) → conservar (separadores, bajo costo)
+      - Si tiene marcadores de contenido útil → conservar siempre
+      - Si tiene marcadores de contrato/legal sin marcadores útiles → descartar
+      - Páginas ambiguas (sin ningún marcador) → conservar (precaución)
+
+    Si el filtro elimina todo, retorna el texto original (safety).
+    """
+    segmentos = re.split(r"(?=\[Página\s+\d+\])", texto_bloque)
+
+    filtradas: list[str] = []
+    excluidas = 0
+
+    for seg in segmentos:
+        seg = seg.strip()
+        if not seg:
+            continue
+
+        # Páginas muy cortas son separadores — conservar sin costo
+        if len(seg) < 200:
+            filtradas.append(seg)
+            continue
+
+        tiene_incluir = bool(_RE_INCLUIR.search(seg))
+        tiene_excluir = bool(_RE_EXCLUIR.search(seg))
+
+        if tiene_incluir:
+            # Contenido útil confirmado → conservar siempre
+            filtradas.append(seg)
+        elif tiene_excluir:
+            # Contrato/legal sin contenido útil → descartar
+            excluidas += 1
+        else:
+            # Ambigua → conservar por precaución
+            filtradas.append(seg)
+
+    if excluidas > 0:
+        print(f" [filtro: -{excluidas} págs]", end="", flush=True)
+
+    resultado = "\n\n".join(filtradas)
+
+    # Safety: si el filtro eliminó todo, devolver el original
+    if len(resultado.strip()) < 100 and len(texto_bloque.strip()) >= 100:
+        return texto_bloque
+
+    return resultado
 
 # Campos esperados en una respuesta válida de Paso 2
 _PASO2_CAMPOS = {"nombre", "dni", "tipo_colegio", "registro_colegio", "fecha_registro", "profesion", "cargo_postulado"}
@@ -143,12 +240,12 @@ def _texto_paso2(block: ProfessionalBlock) -> str:
          en OCR limpio (conf ~0.97) y también incluye el registro del colegio.
       2. Bloque 0 (índice 0) = credenciales — diplomas, más ruidoso, como fallback.
 
-    El bloque 0 (diplomas universitarios y del colegio) suele tener OCR de menor
-    calidad porque son páginas giradas o con mucho ruido tipográfico.
+    Se aplica filtro de páginas para eliminar contratos/resoluciones que el
+    segmentador haya incluido erróneamente en el bloque.
     """
     if len(block.block_texts) >= 2:
-        return block.block_texts[1][:_MAX_TEXT_CHARS]
-    return block.block_texts[0][:_MAX_TEXT_CHARS]
+        return _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+    return _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
 
 
 def _texto_paso3(block: ProfessionalBlock) -> str:
@@ -160,12 +257,14 @@ def _texto_paso3(block: ProfessionalBlock) -> str:
          por cada empresa, OCR limpio (conf ~0.97-0.99).
       2. Bloque 1 (índice 1) = ANEXO 16 — tiene tabla resumen de experiencias,
          útil cuando no hay bloque 2 separado.
+
+    Se aplica filtro de páginas para eliminar contratos/resoluciones.
     """
     if len(block.block_texts) >= 3:
-        return block.block_texts[2][:_MAX_TEXT_CHARS]
+        return _filtrar_paginas(block.block_texts[2])[:_MAX_TEXT_CHARS]
     if len(block.block_texts) >= 2:
-        return block.block_texts[1][:_MAX_TEXT_CHARS]
-    return block.block_texts[0][:_MAX_TEXT_CHARS]
+        return _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+    return _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
 
 
 def extract_professional_info(block: ProfessionalBlock) -> dict:
@@ -173,6 +272,7 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
     Paso 2: extrae nombre, DNI, registro colegio, profesión, cargo del profesional.
     Usa el bloque 1 (ANEXO 16) como fuente primaria — es el más limpio.
     Reintenta si el resultado no pasa la validación de schema.
+    Si bloque 1 falla → fallback a bloque 0 (credenciales: diplomas + CIP).
     """
     texto = _texto_paso2(block)
     prompt = PASO2_PROMPT.format(cargo=block.cargo, texto=texto)
@@ -184,8 +284,18 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
         if intento < 2:
             print(f" [schema inválido, reintentando]", end="", flush=True)
     else:
-        # Agotó intentos — devuelve lo que tenga con flag de revisión
-        result["_needs_review"] = True
+        # Bloque 1 agotó intentos → fallback a bloque 0 (credenciales)
+        if len(block.block_texts) >= 2:
+            texto_fb = _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
+            print(f" [fallback bloque 0]", end="", flush=True)
+            prompt_fb = PASO2_PROMPT.format(cargo=block.cargo, texto=texto_fb)
+            result_fb = call_llm(prompt_fb)
+            if _validar_paso2(result_fb):
+                result = result_fb
+            else:
+                result["_needs_review"] = True
+        else:
+            result["_needs_review"] = True
 
     # Problema 1: si registro_colegio tiene 7+ dígitos, es probablemente un CUI
     # (los registros CIP/CAP tienen 4-6 dígitos) → descarta y marca para revisión
@@ -228,17 +338,20 @@ def extract_experiences(block: ProfessionalBlock, professional_name: str) -> dic
     texto_principal = _texto_paso3(block)
     resultado = _extraer_experiencias_de_texto(texto_principal, professional_name)
 
-    if resultado is None:
-        # Schema inválido tras reintentos
-        return {"experiencias": [], "_needs_review": True}
-
-    # Problema 3: bloque 2 devolvió lista vacía → fallback a bloque 1 (ANEXO 16)
-    if not resultado.get("experiencias") and len(block.block_texts) >= 3:
-        texto_fallback = block.block_texts[1][:_MAX_TEXT_CHARS]
-        print(f" [exp vacías en bloque 3, reintentando con bloque 2 (ANEXO 16)]", end="", flush=True)
+    # Fallback a bloque 1 (ANEXO 16) si:
+    #   - schema inválido (resultado is None), o
+    #   - schema válido pero lista vacía
+    # Condición: solo si existe bloque 3 (len >= 3), es decir que el primario era bloque 2
+    if (resultado is None or not resultado.get("experiencias")) and len(block.block_texts) >= 3:
+        texto_fallback = _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+        razon = "schema inválido" if resultado is None else "lista vacía"
+        print(f" [fallback ANEXO 16 ({razon})]", end="", flush=True)
         resultado_fallback = _extraer_experiencias_de_texto(texto_fallback, professional_name)
         if resultado_fallback and resultado_fallback.get("experiencias"):
             return resultado_fallback
+
+    if resultado is None:
+        return {"experiencias": [], "_needs_review": True}
 
     return resultado
 
