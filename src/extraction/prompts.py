@@ -3,22 +3,25 @@ Prompts para extracción de datos de certificados de profesionales.
 Contexto: propuestas técnicas de licitaciones de obras públicas en Perú.
 """
 
-PASO2_SYSTEM = """Eres un extractor de datos de propuestas técnicas peruanas de obras públicas.
-El texto proviene de OCR sobre documentos escaneados — puede haber errores tipográficos menores.
-Responde SOLO con JSON válido, sin texto adicional."""
+PASO2_PROMPT = """Eres un extractor de datos de propuestas técnicas peruanas de obras públicas.
+El texto proviene de OCR sobre documentos escaneados y puede tener errores tipográficos menores.
 
-PASO2_PROMPT = """Del siguiente texto OCR de un expediente de licitación pública peruana,
-extrae la información del profesional propuesto.
+Del texto OCR a continuación extrae la información del profesional propuesto.
 
-Busca:
-- Su nombre completo (suele aparecer en diplomas universitarios o constancias CIP)
-- DNI (documento de identidad, 8 dígitos)
-- Número de CIP (registro del Colegio de Ingenieros del Perú, 4-6 dígitos)
-- Fecha de incorporación al CIP (formato original del documento)
-- Profesión (Ingeniero Civil, Arquitecto, etc.)
-- Cargo al que postula en esta propuesta
+CARGO ESPERADO: {cargo}
 
-Devuelve este JSON exacto:
+INSTRUCCIONES:
+- nombre: nombre completo de la persona (aparece en diplomas universitarios, constancias CIP o declaración jurada). Máximo 80 caracteres.
+- dni: número de DNI de 8 dígitos
+- cip: número de registro CIP de 4 a 6 dígitos (NO confundir con el DNI)
+- fecha_cip: fecha de incorporación al CIP tal como aparece en el documento
+- profesion: título profesional (Ingeniero Civil, Arquitecto, Ingeniero Sanitario, etc.)
+- cargo_postulado: cargo al que postula en esta propuesta (usa el CARGO ESPERADO como referencia)
+
+REGLA CRÍTICA: Devuelve ÚNICAMENTE este JSON, sin texto antes ni después.
+No uses el contenido de las páginas como claves del JSON.
+Si no encuentras un campo, usa null.
+
 {{
   "nombre": "...",
   "dni": "...",
@@ -28,35 +31,38 @@ Devuelve este JSON exacto:
   "cargo_postulado": "..."
 }}
 
-Si no encuentras un campo, usa null.
-
-CARGO ESPERADO: {cargo}
-
 TEXTO OCR:
 {texto}"""
 
 
-PASO3_SYSTEM = """Eres un extractor de certificados de experiencia laboral de propuestas técnicas peruanas.
-El texto proviene de OCR — puede haber errores tipográficos menores.
-Responde SOLO con JSON válido, sin texto adicional."""
+PASO3_PROMPT = """Eres un extractor de certificados de experiencia laboral de propuestas técnicas peruanas.
+El texto proviene de OCR sobre documentos escaneados y puede tener errores tipográficos menores.
 
-PASO3_PROMPT = """Del siguiente texto OCR extrae TODOS los certificados o constancias de experiencia laboral.
-Cada certificado dice quién prestó servicios, en qué proyecto, en qué período, y quién lo firma.
+Del texto OCR a continuación extrae TODOS los certificados o constancias de experiencia laboral del profesional.
+Los certificados son documentos emitidos por empresas o consorcios que acreditan que el profesional trabajó en un proyecto.
 
-Para cada certificado encontrado, extrae:
-- proyecto: nombre completo del proyecto
-- cargo: cargo desempeñado (tipo de servicio)
-- empresa_emisora: empresa o consorcio que emite la constancia
-- ruc: RUC del emisor si aparece
-- cui: Código Único de Inversiones si aparece (número de 7 dígitos aprox, puede estar como "CUI", "CUl" o "código")
-- fecha_inicio: fecha de inicio del servicio (formato del documento)
-- fecha_fin: fecha de fin del servicio, o "a la fecha" si no tiene fecha de término
-- fecha_emision: fecha en que fue emitido el certificado
-- firmante: nombre de quien firma
-- cargo_firmante: cargo de quien firma
-- folio: número de folio/página del documento si aparece impreso en la hoja
+PROFESIONAL: {nombre}
 
-Devuelve este JSON exacto:
+INSTRUCCIONES campo por campo:
+- proyecto: nombre completo del proyecto de obra (empieza con verbos como "Mejoramiento", "Construcción", "Supervisión de la obra", etc.)
+- cargo: cargo desempeñado en ese proyecto (Coordinador de Supervisión, Jefe de Supervisión, Especialista en Estructuras, etc.)
+- empresa_emisora: nombre de la empresa o consorcio que EMITE la constancia (quien firma el papel)
+- ruc: RUC de la empresa emisora si aparece (11 dígitos)
+- cui: Código Único de Inversiones del proyecto de la constancia.
+  ATENCIÓN: el CUI que aparece en la declaración jurada inicial (ANEXO 16) es el del proyecto LICITADO, NO de las experiencias pasadas.
+  Solo extrae el CUI si aparece dentro de la constancia/certificado individual mismo (por ejemplo: "CUI 2345678" o "código 2345678").
+  Si no aparece explícitamente en la constancia, usa null.
+- fecha_inicio: fecha de inicio del servicio (formato original del documento)
+- fecha_fin: fecha de fin del servicio. Si dice "a la fecha" o "a la actualidad", usa el texto "a la fecha"
+- fecha_emision: fecha en que fue emitido el certificado (suele aparecer al final del documento con "Lima, DD de mes del AAAA")
+- firmante: nombre completo de quien firma el certificado
+- cargo_firmante: cargo de quien firma (Representante Legal, Representante Común, Gerente General, etc.)
+- folio: número de folio impreso al pie de la página (generalmente 3-4 dígitos sueltos, no parte del texto)
+
+REGLA CRÍTICA: Devuelve ÚNICAMENTE este JSON, sin texto antes ni después.
+Usa exactamente estos nombres de campo. No inventes otros nombres.
+Si no hay certificados en el texto, devuelve la estructura con lista vacía.
+
 {{
   "experiencias": [
     {{
@@ -74,10 +80,6 @@ Devuelve este JSON exacto:
     }}
   ]
 }}
-
-Si no hay certificados, devuelve {{"experiencias": []}}.
-
-PROFESIONAL: {nombre}
 
 TEXTO OCR:
 {texto}"""
