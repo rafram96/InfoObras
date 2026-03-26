@@ -11,6 +11,14 @@ class ProfessionalBlock:
     """
     Resultado intermedio del parser: un profesional con su texto completo.
     Combina *_profesionales_*.md (metadata) + *_texto_*.md (contenido).
+
+    Estructura típica de bloques por profesional:
+      bloque 0 → credenciales: diploma universitario + diploma del colegio profesional
+      bloque 1 → ANEXO 16: declaración jurada + tabla resumen de experiencias
+      bloque 2 → constancias individuales: certificados emitidos por cada empresa
+
+    Las páginas separadoras (qwen fallback, texto muy corto) encabezan cada bloque.
+    Los bloques 1 y 2 tienen el mejor OCR — el bloque 0 suele ser el más ruidoso.
     """
     index: int
     cargo: str                           # cargo sin número (e.g. "Gerente De Supervisión")
@@ -18,7 +26,8 @@ class ProfessionalBlock:
     numero: Optional[str]                # "N°1", "N°2", None si no tiene
     separator_page: int
     page_ranges: list[tuple[int, int]]   # [(2, 4), (98, 102), (300, 304)]
-    full_text: str                       # texto OCR concatenado de todas las páginas
+    block_texts: list[str]               # texto OCR por bloque, en orden (uno por page_range)
+    full_text: str                       # todos los bloques concatenados (compatibilidad)
     source_profesionales: str            # path del *_profesionales_*.md
     source_texto: str                    # path del *_texto_*.md
 

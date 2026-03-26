@@ -94,17 +94,17 @@ def parse_professional_blocks(
         if not page_ranges:
             continue
 
-        # Construye el texto completo uniendo todas las páginas en orden
-        all_pages_in_block: list[int] = []
+        # Construye texto separado por bloque (un texto por page_range)
+        block_texts: list[str] = []
         for start, end in page_ranges:
-            all_pages_in_block.extend(range(start, end + 1))
+            parts: list[str] = []
+            for pnum in range(start, end + 1):
+                if pnum in page_texts:
+                    parts.append(f"[Página {pnum}]\n{page_texts[pnum]}")
+            block_texts.append("\n\n".join(parts))
 
-        text_parts: list[str] = []
-        for pnum in all_pages_in_block:
-            if pnum in page_texts:
-                text_parts.append(f"[Página {pnum}]\n{page_texts[pnum]}")
-
-        full_text = "\n\n".join(text_parts)
+        # full_text = todos los bloques concatenados (compatibilidad hacia atrás)
+        full_text = "\n\n".join(block_texts)
 
         # Índice desde el número en el header (### N. ...)
         idx_match = re.match(r"###\s+(\d+)\.", section.strip().splitlines()[0])
@@ -117,6 +117,7 @@ def parse_professional_blocks(
             numero=numero,
             separator_page=separator_page,
             page_ranges=page_ranges,
+            block_texts=block_texts,
             full_text=full_text,
             source_profesionales=str(prof_path),
             source_texto=str(texto_path),

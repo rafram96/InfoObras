@@ -134,12 +134,47 @@ def _normalizar_paso3(result: dict) -> dict:
 # Extracción con retry de validación
 # ---------------------------------------------------------------------------
 
+def _texto_paso2(block: ProfessionalBlock) -> str:
+    """
+    Selecciona el texto más útil para extraer datos del profesional (Paso 2).
+
+    Prioridad:
+      1. Bloque 1 (índice 1) = ANEXO 16 — siempre tiene "Yo NOMBRE identificado..."
+         en OCR limpio (conf ~0.97) y también incluye el registro del colegio.
+      2. Bloque 0 (índice 0) = credenciales — diplomas, más ruidoso, como fallback.
+
+    El bloque 0 (diplomas universitarios y del colegio) suele tener OCR de menor
+    calidad porque son páginas giradas o con mucho ruido tipográfico.
+    """
+    if len(block.block_texts) >= 2:
+        return block.block_texts[1][:_MAX_TEXT_CHARS]
+    return block.block_texts[0][:_MAX_TEXT_CHARS]
+
+
+def _texto_paso3(block: ProfessionalBlock) -> str:
+    """
+    Selecciona el texto más útil para extraer experiencias (Paso 3).
+
+    Prioridad:
+      1. Bloque 2 (índice 2) = constancias individuales — certificados emitidos
+         por cada empresa, OCR limpio (conf ~0.97-0.99).
+      2. Bloque 1 (índice 1) = ANEXO 16 — tiene tabla resumen de experiencias,
+         útil cuando no hay bloque 2 separado.
+    """
+    if len(block.block_texts) >= 3:
+        return block.block_texts[2][:_MAX_TEXT_CHARS]
+    if len(block.block_texts) >= 2:
+        return block.block_texts[1][:_MAX_TEXT_CHARS]
+    return block.block_texts[0][:_MAX_TEXT_CHARS]
+
+
 def extract_professional_info(block: ProfessionalBlock) -> dict:
     """
-    Paso 2: extrae nombre, DNI, CIP, profesión, cargo del profesional.
+    Paso 2: extrae nombre, DNI, registro colegio, profesión, cargo del profesional.
+    Usa el bloque 1 (ANEXO 16) como fuente primaria — es el más limpio.
     Reintenta si el resultado no pasa la validación de schema.
     """
-    texto = block.full_text[:_MAX_TEXT_CHARS]
+    texto = _texto_paso2(block)
     prompt = PASO2_PROMPT.format(cargo=block.cargo, texto=texto)
 
     for intento in range(1, 3):  # máximo 2 intentos de validación
@@ -161,9 +196,10 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
 def extract_experiences(block: ProfessionalBlock, professional_name: str) -> dict:
     """
     Paso 3: extrae todos los certificados/constancias de experiencia.
+    Usa el bloque 2 (constancias individuales) como fuente primaria.
     Normaliza campos y reintenta si el schema es inválido.
     """
-    texto = block.full_text[:_MAX_TEXT_CHARS]
+    texto = _texto_paso3(block)
     prompt = PASO3_PROMPT.format(nombre=professional_name, texto=texto)
 
     for intento in range(1, 3):
