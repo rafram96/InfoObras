@@ -11,10 +11,11 @@ Del texto OCR a continuación extrae la información del profesional propuesto.
 CARGO ESPERADO: {cargo}
 
 INSTRUCCIONES:
-- nombre: nombre completo de la persona (aparece en diplomas universitarios, constancias CIP o declaración jurada). Máximo 80 caracteres.
+- nombre: nombre completo de la persona. Búscalo en la declaración jurada (empieza con "Yo [NOMBRE] identificado...") o en los certificados ("Certificamos que el Ing./Arq. [NOMBRE]..."). Máximo 80 caracteres.
 - dni: número de DNI de 8 dígitos
-- cip: número de registro CIP de 4 a 6 dígitos (NO confundir con el DNI)
-- fecha_cip: fecha de incorporación al CIP tal como aparece en el documento
+- tipo_colegio: sigla del colegio profesional al que pertenece. Ejemplos: "CIP" (Colegio de Ingenieros del Perú), "CAP" (Colegio de Arquitectos del Perú), "CBP" (Colegio de Biólogos), "CMP" (Colegio Médico). Búscalo en el diploma del colegio. Si no aparece, usa null.
+- registro_colegio: número de registro en el colegio profesional (4 a 6 dígitos). Aparece como "CIP N° XXXX", "CAP N° XXXX", "Reg. N° XXXX", etc. NO confundir con el DNI. Si no aparece, usa null.
+- fecha_registro: fecha de incorporación al colegio profesional tal como aparece en el documento. Si no aparece, usa null.
 - profesion: título profesional (Ingeniero Civil, Arquitecto, Ingeniero Sanitario, etc.)
 - cargo_postulado: cargo al que postula en esta propuesta (usa el CARGO ESPERADO como referencia)
 
@@ -25,8 +26,9 @@ Si no encuentras un campo, usa null.
 {{
   "nombre": "...",
   "dni": "...",
-  "cip": "...",
-  "fecha_cip": "...",
+  "tipo_colegio": "...",
+  "registro_colegio": "...",
+  "fecha_registro": "...",
   "profesion": "...",
   "cargo_postulado": "..."
 }}

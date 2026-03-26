@@ -30,7 +30,8 @@ class Professional:
     role: str                        # cargo (Jefe de Supervisión, etc.)
     role_number: str                 # N°1, N°2, etc.
     profession: Optional[str]        # Ingeniero Civil, Arquitecto, etc.
-    cip: Optional[str]
+    tipo_colegio: Optional[str]      # CIP, CAP, CBP, CMP, etc.
+    registro_colegio: Optional[str]  # número de registro en el colegio
     registration_date: Optional[date]
     folio: Optional[str]
     source_file: str                 # archivo .md de origen

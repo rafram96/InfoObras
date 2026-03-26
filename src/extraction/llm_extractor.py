@@ -12,8 +12,8 @@ from src.extraction.prompts import PASO2_PROMPT, PASO3_PROMPT
 
 _MAX_TEXT_CHARS = 40_000
 
-# Campos obligatorios que debe tener una respuesta válida de Paso 2
-_PASO2_CAMPOS = {"nombre", "dni", "cip", "fecha_cip", "profesion", "cargo_postulado"}
+# Campos esperados en una respuesta válida de Paso 2
+_PASO2_CAMPOS = {"nombre", "dni", "tipo_colegio", "registro_colegio", "fecha_registro", "profesion", "cargo_postulado"}
 
 # Campos obligatorios de cada experiencia en Paso 3
 _PASO3_CAMPOS = {
@@ -58,16 +58,20 @@ def _validar_paso2(result: dict) -> bool:
     """
     Retorna True si el resultado tiene la estructura esperada de Paso 2.
     Falla si faltan campos clave o si los valores son textos volcados.
+
+    Nota: no se exige 'cip' porque los Arquitectos tienen CAP en lugar de CIP.
+    El único campo obligatorio real es 'nombre'.
     """
     if not isinstance(result, dict):
         return False
-    # Debe tener al menos nombre y cip
-    if not result.get("nombre") or not result.get("cip"):
+    # Solo exige nombre — CIP/CAP puede ser null (Arquitectos, otros colegios)
+    nombre = result.get("nombre")
+    if not nombre or not isinstance(nombre, str):
         return False
-    # El nombre no debe ser larguísimo (señal de que el LLM volcó texto)
-    if _es_texto_volcado(result.get("nombre", "")):
+    # El nombre no debe ser larguísimo (señal de que el LLM volcó texto crudo)
+    if _es_texto_volcado(nombre):
         return False
-    # Las claves no deben ser textos de página ("Página 350", "&#x27;", etc.)
+    # Las claves no deben ser textos de página ("Página 350") ni entidades HTML ("&#x27;")
     claves_raras = [k for k in result if k.startswith("Página") or k.startswith("&#")]
     if claves_raras:
         return False
