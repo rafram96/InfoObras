@@ -478,6 +478,10 @@ def _extraer_experiencias_de_texto(texto: str, professional_name: str) -> dict |
             return _normalizar_paso3(result)
         if intento < 2:
             print(f" [schema inválido exp, reintentando]", end="", flush=True)
+        # DEBUG: mostrar qué devolvió el LLM cuando falla
+        import json
+        preview = json.dumps(result, ensure_ascii=False, default=str)[:500]
+        print(f"\n    DEBUG respuesta LLM (intento {intento}): {preview}", flush=True)
     return None
 
 
