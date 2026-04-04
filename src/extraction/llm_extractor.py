@@ -270,6 +270,12 @@ _SINONIMOS_EXP: dict[str, str] = {
     "position_of_signatory":  "cargo_firmante",
     "signatory_position":     "cargo_firmante",
     "signatory_role":         "cargo_firmante",
+    "certifier":              "firmante",
+    "certifier_name":         "firmante",
+    "certifier_position":     "cargo_firmante",
+    "certifier_role":         "cargo_firmante",
+    "certifier_ruc":          "ruc",
+    "certifier_company":      "empresa_emisora",
 }
 
 # Sinónimos para la clave raíz de la respuesta de Paso 3
