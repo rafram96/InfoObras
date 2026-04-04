@@ -198,22 +198,22 @@ def _clasificar_paginas_tipo_a(texto_bloque: str) -> dict[str, str]:
         preview = seg[:80].replace("\n", " ").strip()
         if _RE_ANEXO16.search(seg):
             clasificadas["anexo16"].append(seg)
-            print(f"\n    pág {pag_num} → anexo16: {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → anexo16: {preview}", flush=True)
         elif _RE_INSTITUCIONAL.search(seg):
             clasificadas["ruido"].append(seg)
-            print(f"\n    pág {pag_num} → ruido(institucional): {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → ruido(institucional): {preview}", flush=True)
         elif _RE_CERTIFICADO.search(seg):
             clasificadas["certificados"].append(seg)
-            print(f"\n    pág {pag_num} → certificado: {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → certificado: {preview}", flush=True)
         elif _RE_DIPLOMA.search(seg):
             clasificadas["diplomas"].append(seg)
-            print(f"\n    pág {pag_num} → diploma: {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → diploma: {preview}", flush=True)
         elif _RE_EXCLUIR.search(seg):
             clasificadas["ruido"].append(seg)
-            print(f"\n    pág {pag_num} → ruido(excluir): {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → ruido(excluir): {preview}", flush=True)
         else:
             clasificadas["ruido"].append(seg)
-            print(f"\n    pág {pag_num} → ruido(sin marcador): {preview}", flush=True)
+            # print(f"\n    pág {pag_num} → ruido(sin marcador): {preview}", flush=True)
 
     conteos = {k: len(v) for k, v in clasificadas.items() if v}
     if conteos:
@@ -515,10 +515,10 @@ def _extraer_experiencias_de_texto(texto: str, professional_name: str) -> dict |
             return _normalizar_paso3(result)
         if intento < 2:
             print(f" [schema inválido exp, reintentando]", end="", flush=True)
-        # DEBUG: mostrar qué devolvió el LLM cuando falla
-        import json
-        preview = json.dumps(result, ensure_ascii=False, default=str)[:500]
-        print(f"\n    DEBUG respuesta LLM (intento {intento}): {preview}", flush=True)
+        # # DEBUG: mostrar qué devolvió el LLM cuando falla
+        # import json
+        # preview = json.dumps(result, ensure_ascii=False, default=str)[:500]
+        # print(f"\n    DEBUG respuesta LLM (intento {intento}): {preview}", flush=True)
     return None
 
 
