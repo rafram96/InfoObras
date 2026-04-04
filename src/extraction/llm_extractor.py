@@ -57,6 +57,42 @@ _RE_INCLUIR = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Clasificación de páginas para Tipo A (bloque único)
+# ---------------------------------------------------------------------------
+# En documentos Tipo B, motor-OCR ya separa los bloques usando delimitadores
+# temáticos (B.1 Calificaciones, B.2 Experiencia, etc.).
+# En Tipo A no existen esos delimitadores — todo queda en un solo bloque.
+# Estos patrones replican esa separación clasificando por contenido.
+
+_RE_ANEXO16 = re.compile(
+    r"ANEXO\s+N[°º]\s*16"
+    r"|CALIFICACIONES\s+Y\s+EXPERIENCIA"
+    r"|Yo,?\s+[A-ZÁÉÍÓÚÑ\s]{5,},?\s+identificado"
+    r"|Formaci[óo]n\s+acad[ée]mica",
+    re.IGNORECASE,
+)
+
+_RE_DIPLOMA = re.compile(
+    r"A\s+NOMBRE\s+DE\s+LA\s+NACI[ÓO]N"
+    r"|T[ÍI]TULO\s+(?:PROFESIONAL|de\s+INGENIERO|de\s+ARQUITECTO)"
+    r"|MIEMBRO\s+ORDINARIO\s+DE\s+LA\s+ORDEN"
+    r"|COLEGIO\s+DE\s+(?:INGENIEROS|ARQUITECTOS)\s+DEL\s+PER[ÚU]"
+    r"|REGISTRO\s+N[°º\.]?\s*\d{3,6}"
+    r"|EL\s+(?:RECTOR|DECANO)",
+    re.IGNORECASE,
+)
+
+_RE_CERTIFICADO = re.compile(
+    r"CONSTANCIA\s+DE\s+(?:SERVICIOS|TRABAJO|EJECUCI[ÓO]N)"
+    r"|CERTIFICA(?:DO|MOS)?\s+(?:DE\s+(?:TRABAJO|SERVICIOS)|QUE)"
+    r"|ha\s+(?:prestado|brindado)\s+(?:sus\s+)?servicios"
+    r"|Representante\s+(?:Legal|Com[úu]n)"
+    r"|DEJA\s+CONSTANCIA",
+    re.IGNORECASE,
+)
+
+
 def _filtrar_paginas(texto_bloque: str) -> str:
     """
     Filtra páginas irrelevantes (contratos, resoluciones, SEACE)
@@ -108,6 +144,59 @@ def _filtrar_paginas(texto_bloque: str) -> str:
         return texto_bloque
 
     return resultado
+
+
+def _clasificar_paginas_tipo_a(texto_bloque: str) -> dict[str, str]:
+    """
+    Clasifica las páginas de un bloque único (Tipo A) en sub-bloques semánticos.
+    Replica la separación que en Tipo B hacen los delimitadores B.1/B.2.
+
+    Retorna dict con claves:
+      - "anexo16":      páginas del ANEXO 16 (declaración + tabla experiencias)
+      - "diplomas":     páginas de diplomas/credenciales (universidad, CIP/CAP)
+      - "certificados": páginas de constancias de servicio
+      - "ruido":        páginas no clasificadas (SUSALUD, IPRESS, institucionales)
+
+    Prioridad: anexo16 > certificado > diploma > ruido
+    """
+    segmentos = re.split(r"(?=\[Página\s+\d+\])", texto_bloque)
+
+    clasificadas: dict[str, list[str]] = {
+        "anexo16": [],
+        "diplomas": [],
+        "certificados": [],
+        "ruido": [],
+    }
+
+    for seg in segmentos:
+        seg = seg.strip()
+        if not seg:
+            continue
+
+        # Páginas muy cortas son separadores visuales — no aportan
+        if len(seg) < 200:
+            continue
+
+        # Clasificar por prioridad
+        if _RE_ANEXO16.search(seg):
+            clasificadas["anexo16"].append(seg)
+        elif _RE_CERTIFICADO.search(seg):
+            clasificadas["certificados"].append(seg)
+        elif _RE_DIPLOMA.search(seg):
+            clasificadas["diplomas"].append(seg)
+        elif _RE_EXCLUIR.search(seg):
+            clasificadas["ruido"].append(seg)
+        else:
+            # Sin marcadores conocidos → ruido (SUSALUD, IPRESS, tablas)
+            clasificadas["ruido"].append(seg)
+
+    conteos = {k: len(v) for k, v in clasificadas.items() if v}
+    if conteos:
+        resumen = ", ".join(f"{k}:{n}" for k, n in conteos.items())
+        print(f" [clasificación: {resumen}]", end="", flush=True)
+
+    return {k: "\n\n".join(v) for k, v in clasificadas.items()}
+
 
 # Campos esperados en una respuesta válida de Paso 2
 _PASO2_CAMPOS = {"nombre", "dni", "tipo_colegio", "registro_colegio", "fecha_registro", "profesion", "cargo_postulado"}
@@ -235,16 +324,31 @@ def _texto_paso2(block: ProfessionalBlock) -> str:
     """
     Selecciona el texto más útil para extraer datos del profesional (Paso 2).
 
-    Prioridad:
-      1. Bloque 1 (índice 1) = ANEXO 16 — siempre tiene "Yo NOMBRE identificado..."
-         en OCR limpio (conf ~0.97) y también incluye el registro del colegio.
-      2. Bloque 0 (índice 0) = credenciales — diplomas, más ruidoso, como fallback.
+    Tipo B (2+ bloques — separados por delimitadores B.1/B.2):
+      Prioridad: bloque 1 (ANEXO 16) → bloque 0 (credenciales)
 
-    Se aplica filtro de páginas para eliminar contratos/resoluciones que el
-    segmentador haya incluido erróneamente en el bloque.
+    Tipo A (1 bloque — todo contiguo):
+      Clasifica páginas y envía: ANEXO 16 + diplomas
+      Fallback: todo el bloque filtrado
     """
     if len(block.block_texts) >= 2:
+        # Tipo B — comportamiento existente
         return _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+
+    # Tipo A — clasificar páginas del bloque único
+    clasificadas = _clasificar_paginas_tipo_a(block.block_texts[0])
+
+    # Paso 2 necesita: declaración (nombre, DNI, cargo) + diplomas (CIP, profesión)
+    partes: list[str] = []
+    if clasificadas["anexo16"]:
+        partes.append(clasificadas["anexo16"])
+    if clasificadas["diplomas"]:
+        partes.append(clasificadas["diplomas"])
+
+    if partes:
+        return "\n\n".join(partes)[:_MAX_TEXT_CHARS]
+
+    # Fallback: clasificación no encontró nada → enviar todo filtrado
     return _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
 
 
@@ -252,18 +356,30 @@ def _texto_paso3(block: ProfessionalBlock) -> str:
     """
     Selecciona el texto más útil para extraer experiencias (Paso 3).
 
-    Prioridad:
-      1. Bloque 2 (índice 2) = constancias individuales — certificados emitidos
-         por cada empresa, OCR limpio (conf ~0.97-0.99).
-      2. Bloque 1 (índice 1) = ANEXO 16 — tiene tabla resumen de experiencias,
-         útil cuando no hay bloque 2 separado.
+    Tipo B (3+ bloques — separados por delimitadores B.1/B.2):
+      Prioridad: bloque 2 (constancias) → bloque 1 (ANEXO 16)
 
-    Se aplica filtro de páginas para eliminar contratos/resoluciones.
+    Tipo A (1 bloque — todo contiguo):
+      Clasifica páginas y envía: solo certificados
+      Fallback 1: ANEXO 16 (tiene tabla resumen de experiencias)
+      Fallback 2: todo el bloque filtrado
     """
     if len(block.block_texts) >= 3:
         return _filtrar_paginas(block.block_texts[2])[:_MAX_TEXT_CHARS]
     if len(block.block_texts) >= 2:
         return _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+
+    # Tipo A — clasificar páginas del bloque único
+    clasificadas = _clasificar_paginas_tipo_a(block.block_texts[0])
+
+    if clasificadas["certificados"]:
+        return clasificadas["certificados"][:_MAX_TEXT_CHARS]
+
+    # Fallback: ANEXO 16 tiene tabla resumen de experiencias
+    if clasificadas["anexo16"]:
+        return clasificadas["anexo16"][:_MAX_TEXT_CHARS]
+
+    # Último fallback: todo filtrado
     return _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
 
 
@@ -284,8 +400,9 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
         if intento < 2:
             print(f" [schema inválido, reintentando]", end="", flush=True)
     else:
-        # Bloque 1 agotó intentos → fallback a bloque 0 (credenciales)
+        # Texto primario agotó intentos → fallback
         if len(block.block_texts) >= 2:
+            # Tipo B: fallback a bloque 0 (credenciales)
             texto_fb = _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
             print(f" [fallback bloque 0]", end="", flush=True)
             prompt_fb = PASO2_PROMPT.format(cargo=block.cargo, texto=texto_fb)
@@ -295,7 +412,18 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
             else:
                 result["_needs_review"] = True
         else:
-            result["_needs_review"] = True
+            # Tipo A: si clasificación parcial falló, intentar con todo filtrado
+            texto_completo = _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
+            if texto_completo != texto:
+                print(f" [fallback texto completo]", end="", flush=True)
+                prompt_fb = PASO2_PROMPT.format(cargo=block.cargo, texto=texto_completo)
+                result_fb = call_llm(prompt_fb)
+                if _validar_paso2(result_fb):
+                    result = result_fb
+                else:
+                    result["_needs_review"] = True
+            else:
+                result["_needs_review"] = True
 
     # Problema 1: si registro_colegio tiene 7+ dígitos, es probablemente un CUI
     # (los registros CIP/CAP tienen 4-6 dígitos) → descarta y marca para revisión
@@ -338,17 +466,28 @@ def extract_experiences(block: ProfessionalBlock, professional_name: str) -> dic
     texto_principal = _texto_paso3(block)
     resultado = _extraer_experiencias_de_texto(texto_principal, professional_name)
 
-    # Fallback a bloque 1 (ANEXO 16) si:
-    #   - schema inválido (resultado is None), o
-    #   - schema válido pero lista vacía
-    # Condición: solo si existe bloque 3 (len >= 3), es decir que el primario era bloque 2
-    if (resultado is None or not resultado.get("experiencias")) and len(block.block_texts) >= 3:
-        texto_fallback = _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+    # Fallback si schema inválido o lista vacía
+    if resultado is None or not resultado.get("experiencias"):
         razon = "schema inválido" if resultado is None else "lista vacía"
-        print(f" [fallback ANEXO 16 ({razon})]", end="", flush=True)
-        resultado_fallback = _extraer_experiencias_de_texto(texto_fallback, professional_name)
-        if resultado_fallback and resultado_fallback.get("experiencias"):
-            return resultado_fallback
+
+        if len(block.block_texts) >= 3:
+            # Tipo B: fallback a bloque 1 (ANEXO 16)
+            texto_fallback = _filtrar_paginas(block.block_texts[1])[:_MAX_TEXT_CHARS]
+            print(f" [fallback ANEXO 16 ({razon})]", end="", flush=True)
+            resultado_fallback = _extraer_experiencias_de_texto(texto_fallback, professional_name)
+            if resultado_fallback and resultado_fallback.get("experiencias"):
+                return resultado_fallback
+
+        elif len(block.block_texts) == 1:
+            # Tipo A: probar ANEXO 16 clasificado (tiene tabla resumen de experiencias)
+            clasificadas = _clasificar_paginas_tipo_a(block.block_texts[0])
+            if clasificadas["anexo16"] and clasificadas["anexo16"] != texto_principal:
+                print(f" [fallback ANEXO 16 clasificado ({razon})]", end="", flush=True)
+                resultado_fallback = _extraer_experiencias_de_texto(
+                    clasificadas["anexo16"][:_MAX_TEXT_CHARS], professional_name
+                )
+                if resultado_fallback and resultado_fallback.get("experiencias"):
+                    return resultado_fallback
 
     if resultado is None:
         return {"experiencias": [], "_needs_review": True}
