@@ -1,2 +1,17 @@
-requests>=2.31.0
-openpyxl>=3.1.0
+# ── API ──────────────────────────────────────────────────────────────────────
+fastapi>=0.110
+uvicorn>=0.30
+
+# ── TDR: extracción de requisitos de bases (Paso 1) ─────────────────────────
+openai>=1.0              # cliente compatible con Ollama API
+pdfplumber>=0.11         # extracción de texto de PDFs digitales
+Pillow>=10.0             # manipulación de imágenes para Qwen VL
+
+# ── Extracción: profesionales y experiencias (Pasos 2-3) ────────────────────
+requests>=2.31           # llamadas HTTP a Ollama + scraping
+
+# ── Reporting ────────────────────────────────────────────────────────────────
+openpyxl>=3.1            # generación de Excel
+
+# ── Utilidades ───────────────────────────────────────────────────────────────
+python-dotenv>=1.0       # variables de entorno (opcional)
