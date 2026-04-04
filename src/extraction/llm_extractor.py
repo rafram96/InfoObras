@@ -257,10 +257,19 @@ _SINONIMOS_EXP: dict[str, str] = {
     "start_date":             "fecha_inicio",
     "end_date":               "fecha_fin",
     "issue_date":             "fecha_emision",
+    "date_of_constancia":     "fecha_emision",
+    "date_of_certificate":    "fecha_emision",
+    "certificate_date":       "fecha_emision",
+    "constancia_date":        "fecha_emision",
     "signer":                 "firmante",
     "signer_name":            "firmante",
+    "signatory":              "firmante",
+    "signed_by":              "firmante",
     "signer_position":        "cargo_firmante",
     "signer_role":            "cargo_firmante",
+    "position_of_signatory":  "cargo_firmante",
+    "signatory_position":     "cargo_firmante",
+    "signatory_role":         "cargo_firmante",
 }
 
 # Sinónimos para la clave raíz de la respuesta de Paso 3
