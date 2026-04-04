@@ -92,6 +92,19 @@ _RE_CERTIFICADO = re.compile(
     re.IGNORECASE,
 )
 
+# Ruido institucional — páginas SUSALUD, IPRESS, RENIPRESS que pueden contener
+# palabras como "servicios" o "Representante Legal" y colarse como certificados
+_RE_INSTITUCIONAL = re.compile(
+    r"SUSALUD"
+    r"|IPRESS"
+    r"|RENIPRESS"
+    r"|Registro\s+Nacional\s+de\s+I[Pp]res"
+    r"|Categorizaci[óo]n\s+(?:de|del)\s+(?:Establecimiento|EESS)"
+    r"|SEACE"
+    r"|Buscador\s+de\s+Proveedores",
+    re.IGNORECASE,
+)
+
 
 def _filtrar_paginas(texto_bloque: str) -> str:
     """
@@ -181,11 +194,14 @@ def _clasificar_paginas_tipo_a(texto_bloque: str) -> dict[str, str]:
         if len(seg) < 200:
             continue
 
-        # Clasificar por prioridad
+        # Clasificar por prioridad (ruido institucional se chequea antes que certificados)
         preview = seg[:80].replace("\n", " ").strip()
         if _RE_ANEXO16.search(seg):
             clasificadas["anexo16"].append(seg)
             print(f"\n    pág {pag_num} → anexo16: {preview}", flush=True)
+        elif _RE_INSTITUCIONAL.search(seg):
+            clasificadas["ruido"].append(seg)
+            print(f"\n    pág {pag_num} → ruido(institucional): {preview}", flush=True)
         elif _RE_CERTIFICADO.search(seg):
             clasificadas["certificados"].append(seg)
             print(f"\n    pág {pag_num} → certificado: {preview}", flush=True)
