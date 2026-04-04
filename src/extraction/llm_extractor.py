@@ -247,7 +247,24 @@ _SINONIMOS_EXP: dict[str, str] = {
     "fecha_de_constancia":    "fecha_emision",
     "fecha_certificado":      "fecha_emision",
     "fecha_emision_cert":     "fecha_emision",
+    # Campos en inglés (el LLM a veces responde en inglés)
+    "project":                "proyecto",
+    "project_name":           "proyecto",
+    "position":               "cargo",
+    "role":                   "cargo",
+    "company":                "empresa_emisora",
+    "company_name":           "empresa_emisora",
+    "start_date":             "fecha_inicio",
+    "end_date":               "fecha_fin",
+    "issue_date":             "fecha_emision",
+    "signer":                 "firmante",
+    "signer_name":            "firmante",
+    "signer_position":        "cargo_firmante",
+    "signer_role":            "cargo_firmante",
 }
+
+# Sinónimos para la clave raíz de la respuesta de Paso 3
+_SINONIMOS_RAIZ_PASO3 = {"services", "certificates", "experiences", "certifications"}
 
 # Regex para partir un periodo tipo "22.05.2017 al 31.12.2019"
 _PERIODO_RE = re.compile(
@@ -290,9 +307,20 @@ def _validar_paso2(result: dict) -> bool:
 
 
 def _validar_paso3(result: dict) -> bool:
-    """Retorna True si el resultado tiene la estructura esperada de Paso 3."""
+    """
+    Retorna True si el resultado tiene la estructura esperada de Paso 3.
+    Acepta sinónimos en inglés de la clave raíz y los normaliza a 'experiencias'.
+    """
     if not isinstance(result, dict):
         return False
+
+    # Normalizar clave raíz: si usó "services", "certificates", etc. → "experiencias"
+    if "experiencias" not in result:
+        for sinonimo in _SINONIMOS_RAIZ_PASO3:
+            if sinonimo in result and isinstance(result[sinonimo], list):
+                result["experiencias"] = result.pop(sinonimo)
+                break
+
     if "experiencias" not in result:
         return False
     if not isinstance(result["experiencias"], list):
