@@ -173,22 +173,31 @@ def _clasificar_paginas_tipo_a(texto_bloque: str) -> dict[str, str]:
         if not seg:
             continue
 
+        # Extraer número de página para el log
+        pag_match = re.match(r"\[Página\s+(\d+)\]", seg)
+        pag_num = pag_match.group(1) if pag_match else "?"
+
         # Páginas muy cortas son separadores visuales — no aportan
         if len(seg) < 200:
             continue
 
         # Clasificar por prioridad
+        preview = seg[:80].replace("\n", " ").strip()
         if _RE_ANEXO16.search(seg):
             clasificadas["anexo16"].append(seg)
+            print(f"\n    pág {pag_num} → anexo16: {preview}", flush=True)
         elif _RE_CERTIFICADO.search(seg):
             clasificadas["certificados"].append(seg)
+            print(f"\n    pág {pag_num} → certificado: {preview}", flush=True)
         elif _RE_DIPLOMA.search(seg):
             clasificadas["diplomas"].append(seg)
+            print(f"\n    pág {pag_num} → diploma: {preview}", flush=True)
         elif _RE_EXCLUIR.search(seg):
             clasificadas["ruido"].append(seg)
+            print(f"\n    pág {pag_num} → ruido(excluir): {preview}", flush=True)
         else:
-            # Sin marcadores conocidos → ruido (SUSALUD, IPRESS, tablas)
             clasificadas["ruido"].append(seg)
+            print(f"\n    pág {pag_num} → ruido(sin marcador): {preview}", flush=True)
 
     conteos = {k: len(v) for k, v in clasificadas.items() if v}
     if conteos:
