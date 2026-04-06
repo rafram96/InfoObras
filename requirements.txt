@@ -1,6 +1,10 @@
 # ── API ──────────────────────────────────────────────────────────────────────
 fastapi>=0.110
 uvicorn>=0.30
+python-multipart>=0.0.6
+
+# ── Base de datos ────────────────────────────────────────────────────────────
+psycopg2-binary>=2.9
 
 # ── TDR: extracción de requisitos de bases (Paso 1) ─────────────────────────
 openai>=1.0              # cliente compatible con Ollama API

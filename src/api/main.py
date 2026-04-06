@@ -17,16 +17,17 @@ import json
 import logging
 import os
 import re
-import sqlite3
+import shutil
 import subprocess
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-import shutil
-
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,11 +47,13 @@ MOTOR_OCR_PYTHON = os.getenv("MOTOR_OCR_PYTHON")
 MOTOR_OCR_WRAPPER = os.getenv("MOTOR_OCR_WRAPPER")
 UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", "data/uploads"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "data/ocr_outputs"))
-DB_PATH = Path(os.getenv("DB_PATH", "data/jobs.db"))
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://admin:admin123@localhost:5432/infoobras",
+)
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 if not MOTOR_OCR_PYTHON or not MOTOR_OCR_WRAPPER:
     logging.warning(
@@ -87,45 +90,49 @@ app.add_middleware(
 _executor = ThreadPoolExecutor(max_workers=1)
 
 
-# ── DB ────────────────────────────────────────────────────────────────────────
+# ── DB (PostgreSQL) ──────────────────────────────────────────────────────────
+@contextmanager
+def _get_conn():
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _init_db() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id              TEXT PRIMARY KEY,
-                filename        TEXT NOT NULL,
-                pages_from      INTEGER,
-                pages_to        INTEGER,
-                status          TEXT NOT NULL DEFAULT 'pending',
-                created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-                result          TEXT,
-                error           TEXT,
-                progress_pct    INTEGER DEFAULT 0,
-                progress_stage  TEXT,
-                doc_total_pages INTEGER
-            )
-        """)
-        existing = {
-            row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
-        }
-        for col, typedef in [
-            ("progress_pct", "INTEGER DEFAULT 0"),
-            ("progress_stage", "TEXT"),
-            ("doc_total_pages", "INTEGER"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {typedef}")
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id              TEXT PRIMARY KEY,
+                    filename        TEXT NOT NULL,
+                    pages_from      INTEGER,
+                    pages_to        INTEGER,
+                    status          TEXT NOT NULL DEFAULT 'pending',
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    result          JSONB,
+                    error           TEXT,
+                    progress_pct    INTEGER DEFAULT 0,
+                    progress_stage  TEXT,
+                    doc_total_pages INTEGER
+                )
+            """)
 
 
 _init_db()
 
 
 def _update_job(job_id: str, **fields) -> None:
-    sets = ", ".join(f"{k} = ?" for k in fields)
+    sets = ", ".join(f"{k} = %s" for k in fields)
     values = list(fields.values()) + [job_id]
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(f"UPDATE jobs SET {sets} WHERE id = ?", values)
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE jobs SET {sets} WHERE id = %s", values)
 
 
 # ── Progress parser ──────────────────────────────────────────────────────────
@@ -318,7 +325,6 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                                 "_needs_review": True,
                             }
 
-                        # Vincular extracción a la sección correspondiente
                         for seccion in result["secciones"]:
                             if seccion["index"] == block.index:
                                 seccion["profesional"] = extraction.get("profesional")
@@ -335,7 +341,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                         job_id,
                         total_blocks,
                     )
-                except Exception as exc:
+                except Exception:
                     logger.exception(
                         "Job %s: error en fase de extracción — guardando resultado OCR",
                         job_id,
@@ -382,7 +388,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 
 
 # ── Routes: Jobs (OCR + pipeline) ───────────────────────────────────────────
-@app.post("/api/jobs", status_code=201)
+@app.post("/api/jobs", status_code=201, tags=["Jobs"])
 async def create_job(
     file: UploadFile = File(...),
     pages_from: Optional[int] = Form(None),
@@ -404,66 +410,284 @@ async def create_job(
     pdf_path = UPLOADS_DIR / f"{job_id}_{file.filename}"
     pdf_path.write_bytes(await file.read())
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO jobs (id, filename, pages_from, pages_to) VALUES (?,?,?,?)",
-            (job_id, file.filename, pages_from, pages_to),
-        )
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO jobs (id, filename, pages_from, pages_to) VALUES (%s,%s,%s,%s)",
+                (job_id, file.filename, pages_from, pages_to),
+            )
 
     _executor.submit(_run_job, job_id, pdf_path, pages)
     return {"id": job_id, "status": "pending"}
 
 
-@app.get("/api/jobs")
+@app.get("/api/jobs", tags=["Jobs"])
 async def list_jobs():
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
-            "SELECT id, filename, pages_from, pages_to, status, created_at, progress_pct "
-            "FROM jobs ORDER BY created_at DESC LIMIT 50"
-        ).fetchall()
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, filename, pages_from, pages_to, status, "
+                "created_at, progress_pct "
+                "FROM jobs ORDER BY created_at DESC LIMIT 50"
+            )
+            rows = cur.fetchall()
     return [
         {
-            "id": r[0], "filename": r[1], "pages_from": r[2], "pages_to": r[3],
-            "status": r[4], "created_at": r[5], "progress_pct": r[6] or 0,
+            "id": r["id"],
+            "filename": r["filename"],
+            "pages_from": r["pages_from"],
+            "pages_to": r["pages_to"],
+            "status": r["status"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "progress_pct": r["progress_pct"] or 0,
         }
         for r in rows
     ]
 
 
-@app.get("/api/jobs/{job_id}")
+@app.get("/api/jobs/{job_id}", tags=["Jobs"])
 async def get_job(job_id: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT id, filename, pages_from, pages_to, status, created_at, "
-            "result, error, progress_pct, progress_stage, doc_total_pages "
-            "FROM jobs WHERE id = ?",
-            (job_id,),
-        ).fetchone()
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, filename, pages_from, pages_to, status, created_at, "
+                "result, error, progress_pct, progress_stage, doc_total_pages "
+                "FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
     if not row:
         raise HTTPException(404, "Job no encontrado")
+    result_data = row["result"]
+    if isinstance(result_data, str):
+        result_data = json.loads(result_data)
     return {
-        "id": row[0], "filename": row[1], "pages_from": row[2], "pages_to": row[3],
-        "status": row[4], "created_at": row[5],
-        "result": json.loads(row[6]) if row[6] else None,
-        "error": row[7], "progress_pct": row[8] or 0,
-        "progress_stage": row[9], "doc_total_pages": row[10],
+        "id": row["id"],
+        "filename": row["filename"],
+        "pages_from": row["pages_from"],
+        "pages_to": row["pages_to"],
+        "status": row["status"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "result": result_data,
+        "error": row["error"],
+        "progress_pct": row["progress_pct"] or 0,
+        "progress_stage": row["progress_stage"],
+        "doc_total_pages": row["doc_total_pages"],
     }
 
 
-@app.delete("/api/jobs/{job_id}")
+@app.delete("/api/jobs/{job_id}", tags=["Jobs"])
 async def delete_job(job_id: str):
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("SELECT id FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Job no encontrado")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+            if not cur.fetchone():
+                raise HTTPException(404, "Job no encontrado")
+            cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
     job_dir = OUTPUT_DIR / job_id
     if job_dir.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
     return {"ok": True}
 
 
-@app.get("/health")
+# ── Health checks ────────────────────────────────────────────────────────────
+REQUIRED_MODELS = ["qwen2.5:14b", "qwen2.5vl:7b"]
+OLLAMA_BASE = "http://localhost:11434"
+
+
+def _check_db() -> dict:
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM jobs")
+                count = cur.fetchone()[0]
+                cur.execute("SELECT version()")
+                pg_version = cur.fetchone()[0]
+        return {
+            "module": "db",
+            "status": "ok",
+            "detail": {
+                "engine": "postgresql",
+                "version": pg_version,
+                "jobs_count": count,
+                "connection": DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL,
+            },
+        }
+    except Exception as e:
+        return {"module": "db", "status": "error", "detail": {"error": str(e)}}
+
+
+def _check_motor_ocr() -> dict:
+    issues = []
+    python_path = MOTOR_OCR_PYTHON or "(no definido)"
+    wrapper_path = MOTOR_OCR_WRAPPER or "(no definido)"
+
+    if not MOTOR_OCR_PYTHON:
+        issues.append("MOTOR_OCR_PYTHON no definido en .env")
+    elif not Path(MOTOR_OCR_PYTHON).exists():
+        issues.append(f"MOTOR_OCR_PYTHON no existe: {MOTOR_OCR_PYTHON}")
+
+    if not MOTOR_OCR_WRAPPER:
+        issues.append("MOTOR_OCR_WRAPPER no definido en .env")
+    elif not Path(MOTOR_OCR_WRAPPER).exists():
+        issues.append(f"MOTOR_OCR_WRAPPER no existe: {MOTOR_OCR_WRAPPER}")
+
+    py_version = None
+    if MOTOR_OCR_PYTHON and Path(MOTOR_OCR_PYTHON).exists():
+        try:
+            result = subprocess.run(
+                [MOTOR_OCR_PYTHON, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            py_version = result.stdout.strip() or result.stderr.strip()
+        except Exception as e:
+            issues.append(f"No se pudo ejecutar Python: {e}")
+
+    status = "ok" if not issues else "error"
+    return {
+        "module": "motor_ocr",
+        "status": status,
+        "detail": {
+            "python_path": python_path,
+            "wrapper_path": wrapper_path,
+            "python_version": py_version,
+            "issues": issues or None,
+        },
+    }
+
+
+def _check_ollama() -> dict:
+    import requests as req
+    try:
+        resp = req.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
+        resp.raise_for_status()
+        models = [m["name"] for m in resp.json().get("models", [])]
+
+        def has_model(required: str) -> bool:
+            base = required.split(":")[0]
+            tag = required.split(":")[1] if ":" in required else ""
+            return any(base in m and tag in m for m in models)
+
+        missing = [r for r in REQUIRED_MODELS if not has_model(r)]
+        status = "ok" if not missing else "warning"
+        return {
+            "module": "ollama",
+            "status": status,
+            "detail": {
+                "url": OLLAMA_BASE,
+                "models_found": models,
+                "models_required": REQUIRED_MODELS,
+                "missing": missing or None,
+            },
+        }
+    except Exception as e:
+        return {
+            "module": "ollama",
+            "status": "error",
+            "detail": {"url": OLLAMA_BASE, "error": str(e)},
+        }
+
+
+def _check_extraction() -> dict:
+    return {
+        "module": "extraction",
+        "status": "ok" if _EXTRACTION_AVAILABLE else "error",
+        "detail": {
+            "available": _EXTRACTION_AVAILABLE,
+            "functions": (
+                ["parse_professional_blocks", "extract_block"]
+                if _EXTRACTION_AVAILABLE
+                else []
+            ),
+        },
+    }
+
+
+def _check_validation() -> dict:
+    try:
+        from src.validation.rules import check_alerts, calculate_effective_days  # noqa: F401
+        is_stub = False
+        try:
+            calculate_effective_days([], None)
+        except NotImplementedError:
+            is_stub = True
+        except Exception:
+            pass
+        return {
+            "module": "validation",
+            "status": "warning" if is_stub else "ok",
+            "detail": {"available": True, "stub": is_stub},
+        }
+    except ImportError:
+        return {"module": "validation", "status": "error", "detail": {"available": False}}
+
+
+def _check_scraping() -> dict:
+    modules_status = {}
+    for name in ["infoobras", "sunat", "cip"]:
+        try:
+            mod = __import__(f"src.scraping.{name}", fromlist=[name])
+            funcs = [a for a in dir(mod) if not a.startswith("_") and callable(getattr(mod, a))]
+            is_stub = True
+            for fn_name in funcs:
+                try:
+                    getattr(mod, fn_name)("test")
+                except NotImplementedError:
+                    break
+                except Exception:
+                    is_stub = False
+                    break
+            modules_status[name] = {"available": True, "stub": is_stub}
+        except ImportError:
+            modules_status[name] = {"available": False, "stub": None}
+
+    all_available = all(m["available"] for m in modules_status.values())
+    any_stub = any(m.get("stub") for m in modules_status.values())
+    status = "ok" if all_available and not any_stub else "warning" if all_available else "error"
+    return {"module": "scraping", "status": status, "detail": modules_status}
+
+
+@app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "ok"}
+    checks = {
+        "db": _check_db(),
+        "motor_ocr": _check_motor_ocr(),
+        "ollama": _check_ollama(),
+        "extraction": _check_extraction(),
+        "validation": _check_validation(),
+        "scraping": _check_scraping(),
+    }
+    has_error = any(c["status"] == "error" for c in checks.values())
+    has_warning = any(c["status"] == "warning" for c in checks.values())
+    overall = "error" if has_error else "warning" if has_warning else "ok"
+    return {"status": overall, "modules": checks}
+
+
+@app.get("/health/db", tags=["Health"])
+async def health_db():
+    return _check_db()
+
+
+@app.get("/health/motor-ocr", tags=["Health"])
+async def health_motor_ocr():
+    return _check_motor_ocr()
+
+
+@app.get("/health/ollama", tags=["Health"])
+async def health_ollama():
+    return _check_ollama()
+
+
+@app.get("/health/extraction", tags=["Health"])
+async def health_extraction():
+    return _check_extraction()
+
+
+@app.get("/health/validation", tags=["Health"])
+async def health_validation():
+    return _check_validation()
+
+
+@app.get("/health/scraping", tags=["Health"])
+async def health_scraping():
+    return _check_scraping()
