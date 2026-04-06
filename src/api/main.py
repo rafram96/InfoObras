@@ -25,11 +25,21 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
+import shutil
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
+
+# ── Extraction modules (optional — may not be installed on dev laptop) ───────
+try:
+    from src.extraction.md_parser import parse_professional_blocks
+    from src.extraction.llm_extractor import extract_block
+    _EXTRACTION_AVAILABLE = True
+except ImportError:
+    _EXTRACTION_AVAILABLE = False
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MOTOR_OCR_PYTHON = os.getenv("MOTOR_OCR_PYTHON")
@@ -46,6 +56,12 @@ if not MOTOR_OCR_PYTHON or not MOTOR_OCR_WRAPPER:
     logging.warning(
         "MOTOR_OCR_PYTHON y/o MOTOR_OCR_WRAPPER no definidos en .env — "
         "los endpoints de OCR no funcionarán hasta configurarlos."
+    )
+
+if not _EXTRACTION_AVAILABLE:
+    logging.warning(
+        "Módulos de extracción no disponibles — "
+        "se omitirá extracción de datos profesionales."
     )
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -74,6 +90,7 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # ── DB ────────────────────────────────────────────────────────────────────────
 def _init_db() -> None:
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 id              TEXT PRIMARY KEY,
@@ -157,11 +174,11 @@ def _parse_progress(job_id: str, line: str) -> None:
         return
 
     if "segment_document" in line.lower() or "Segmentación" in line:
-        _update_job(job_id, progress_stage="Segmentación", progress_pct=92)
+        _update_job(job_id, progress_stage="Segmentación", progress_pct=90)
         return
 
     if "[subprocess_wrapper] OK" in line:
-        _update_job(job_id, progress_stage="Finalizando", progress_pct=98)
+        _update_job(job_id, progress_stage="OCR completado", progress_pct=91)
         return
 
 
@@ -245,18 +262,97 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                 for s in raw["secciones"]
             ],
         }
+        logger.info(
+            "Job %s OCR completado: %d págs, %d profesionales",
+            job_id,
+            doc["total_pages"],
+            len(raw["secciones"]),
+        )
+
+        # ── Fase 2: Extracción LLM (Pasos 2-3) ─────────────────────────────
+        if _EXTRACTION_AVAILABLE:
+            _update_job(
+                job_id,
+                progress_pct=91,
+                progress_stage="Buscando archivos de segmentación",
+                result=json.dumps(result, ensure_ascii=False),
+            )
+
+            prof_files = list(Path(job_output_dir).rglob("*_profesionales_*.md"))
+            texto_files = list(Path(job_output_dir).rglob("*_texto_*.md"))
+
+            if prof_files and texto_files:
+                try:
+                    blocks = parse_professional_blocks(prof_files[0], texto_files[0])
+                    total_blocks = len(blocks)
+                    logger.info(
+                        "Job %s: iniciando extracción de %d profesionales",
+                        job_id,
+                        total_blocks,
+                    )
+
+                    for i, block in enumerate(blocks):
+                        pct = 92 + int((i / max(total_blocks, 1)) * 7)
+                        _update_job(
+                            job_id,
+                            progress_pct=pct,
+                            progress_stage=f"Extrayendo profesional {i + 1}/{total_blocks}",
+                        )
+
+                        try:
+                            extraction = extract_block(block)
+                        except Exception as exc:
+                            logger.warning(
+                                "Job %s: extracción falló para bloque %d (%s): %s",
+                                job_id,
+                                block.index,
+                                block.cargo,
+                                exc,
+                            )
+                            extraction = {
+                                "profesional": {
+                                    "_cargo": block.cargo,
+                                    "_needs_review": True,
+                                },
+                                "experiencias": [],
+                                "_needs_review": True,
+                            }
+
+                        # Vincular extracción a la sección correspondiente
+                        for seccion in result["secciones"]:
+                            if seccion["index"] == block.index:
+                                seccion["profesional"] = extraction.get("profesional")
+                                seccion["experiencias"] = extraction.get(
+                                    "experiencias", []
+                                )
+                                seccion["_needs_review"] = extraction.get(
+                                    "_needs_review", False
+                                )
+                                break
+
+                    logger.info(
+                        "Job %s: extracción completada para %d profesionales",
+                        job_id,
+                        total_blocks,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Job %s: error en fase de extracción — guardando resultado OCR",
+                        job_id,
+                    )
+            else:
+                logger.warning(
+                    "Job %s: archivos .md no encontrados en %s — omitiendo extracción",
+                    job_id,
+                    job_output_dir,
+                )
+
         _update_job(
             job_id,
             status="done",
             progress_pct=100,
             progress_stage="Completado",
             result=json.dumps(result, ensure_ascii=False),
-        )
-        logger.info(
-            "Job %s completado: %d págs, %d profesionales",
-            job_id,
-            doc["total_pages"],
-            len(raw["secciones"]),
         )
 
     except subprocess.CalledProcessError as e:
@@ -352,6 +448,20 @@ async def get_job(job_id: str):
         "error": row[7], "progress_pct": row[8] or 0,
         "progress_stage": row[9], "doc_total_pages": row[10],
     }
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Job no encontrado")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    job_dir = OUTPUT_DIR / job_id
+    if job_dir.exists():
+        shutil.rmtree(job_dir, ignore_errors=True)
+    return {"ok": True}
 
 
 @app.get("/health")
