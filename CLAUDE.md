@@ -193,6 +193,9 @@ Suma días efectivos descontando paralizaciones, suspensiones y COVID (16/03/202
 - **SUNAT**: fecha de inicio de actividades por RUC (ALT04).
 - **CIP**: verificación de vigencia del número de colegiatura (ALT09).
 
+### Desambiguación de resultados InfoObras
+Cuando la búsqueda por nombre devuelve múltiples obras, se elige la más coherente con los datos del certificado. Criterio principal: la obra cuya fecha de inicio (`fechaIniObra`) sea la más cercana y anterior a la fecha de emisión del certificado. Ejemplo: si hay dos resultados con inicio en 2010 y 2019, y el certificado es de 2020, se elige la de 2019. Si la ambigüedad persiste (scores iguales o sin fecha), la obra queda en cola para confirmación manual en la UI.
+
 ## Excel de salida (5 hojas)
 1. Resumen — totales, alertas críticas
 2. Base de Datos (Paso 3) — 27 columnas
