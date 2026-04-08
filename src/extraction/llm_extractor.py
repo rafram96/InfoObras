@@ -231,6 +231,7 @@ _PASO3_CAMPOS = {
     "proyecto", "cargo", "empresa_emisora", "ruc",
     "fecha_inicio", "fecha_fin", "fecha_emision", "firmante",
     "cargo_firmante", "folio",
+    "tipo_obra", "tipo_intervencion", "tipo_acreditacion",
 }
 
 # Sinónimos de campo que el LLM a veces usa — se normalizan al nombre estándar
@@ -276,6 +277,17 @@ _SINONIMOS_EXP: dict[str, str] = {
     "certifier_role":         "cargo_firmante",
     "certifier_ruc":          "ruc",
     "certifier_company":      "empresa_emisora",
+    # Campos de clasificación (Paso 4)
+    "work_type":              "tipo_obra",
+    "sector":                 "tipo_obra",
+    "tipo_de_obra":           "tipo_obra",
+    "intervention_type":      "tipo_intervencion",
+    "tipo_de_intervencion":   "tipo_intervencion",
+    "intervention":           "tipo_intervencion",
+    "document_type":          "tipo_acreditacion",
+    "tipo_documento":         "tipo_acreditacion",
+    "tipo_de_acreditacion":   "tipo_acreditacion",
+    "accreditation_type":     "tipo_acreditacion",
 }
 
 # Sinónimos para la clave raíz de la respuesta de Paso 3

@@ -11,6 +11,7 @@ from src.tdr.extractor.llm import extraer_bloque
 from src.tdr.extractor.report import (
     DiagnosticData, LLMInteraction, generar_reporte,
 )
+from src.validation.matching import normalizar_cargo as _normalizar_cargo
 
 logger = logging.getLogger(__name__)
 
@@ -336,91 +337,7 @@ def _merge_deep(base: dict, nuevo: dict, base_es_vl: bool = False) -> dict:
     return resultado
 
 
-def _normalizar_cargo(cargo: str) -> str:
-    """
-    Normaliza nombre de cargo para dedup fuzzy.
-
-    Ejemplos:
-      "Jefe de elaboración del expediente técnico"
-        → "jefe"
-      "Jefe y/o Gerente y/o Director y/o Gestor y/o Coordinador"
-        → "jefe"
-      "Gestor BIM y/o líder BIM y/o Supervisor BIM..."
-        → "gestor bim"
-      "Gestor BIM"
-        → "gestor bim"
-      "Especialista en Arquitectura"
-        → "especialista en arquitectura"
-      "Especialista en desarrollo y/o elaboración y/o ... en la especialidad de Estructuras"
-        → "especialista en estructuras"
-      "Especialista en desarrollo y/o ... en la especialidad de Instalaciones Eléctricas"
-        → "especialista en instalaciones eléctricas"
-    """
-    texto = cargo.strip()
-
-    # 0. Caso especial: cargos con "en la especialidad de X"
-    #    El LLM a veces genera cargos largos tipo:
-    #    "Especialista en desarrollo y/o elaboración y/o supervisión y/o
-    #     diseño en la especialidad de Instalaciones Eléctricas"
-    #    La identidad real del cargo es la especialidad final.
-    m_esp = re.search(
-        r"especialidad\s+de\s+(.+)$", texto, re.IGNORECASE,
-    )
-    if m_esp:
-        especialidad = m_esp.group(1).strip().lower()
-        # Tomar primera alternativa antes de "y/o"
-        # Ej: "Comunicaciones y/o Seguridad Electrónica" → "comunicaciones"
-        especialidad = re.split(r"\s+y/o\s+", especialidad, maxsplit=1)[0].strip()
-        return f"especialista en {especialidad}"
-
-    # 0b. "Especialista en Instalaciones de X" → "especialista en X"
-    #     Normaliza variantes como "Instalaciones de Comunicaciones, seg. electrónica..."
-    #     para que coincidan con formas extraídas por step 0 ("especialidad de Comunicaciones").
-    #     Solo aplica cuando hay "de" entre "Instalaciones" y la especialidad.
-    #     "Instalaciones Eléctricas" / "Instalaciones Sanitarias" (sin "de") no son afectadas.
-    m_inst = re.match(
-        r"^Especialista\s+en\s+Instalaciones\s+de\s+(.+)$",
-        texto, re.IGNORECASE,
-    )
-    if m_inst:
-        especialidad = m_inst.group(1).strip().lower()
-        # Tomar primera parte antes de coma o "y/o"
-        especialidad = re.split(r",\s*|\s+y/o\s+", especialidad, maxsplit=1)[0].strip()
-        return f"especialista en {especialidad}"
-
-    # 1. Tomar primera alternativa de "X y/o Y y/o Z"
-    base = re.split(r"\s+y/o\s+", texto, maxsplit=1)[0].strip()
-
-    # 2. Quitar frases de acción tras el cargo base:
-    #    "de elaboración del expediente técnico" → ""
-    #    "en la elaboración de expedientes" → ""
-    #    "del expediente técnico" → ""
-    #    Pero NO quitar "en Arquitectura", "en Estructuras", etc.
-    base = re.sub(
-        r"\s+(?:de(?:l)?|en)\s+(?:la\s+)?(?:elaboración|desarrollo|supervisión|diseño|expediente)"
-        r"(?:\s+\S+)*$",
-        "", base, flags=re.IGNORECASE,
-    )
-
-    # 2b. Strip "de"/"del" that connects a role word to a specialty name
-    #     "Gestor de BIM" → "Gestor BIM"
-    #     "Director del Proyecto" is also stripped, which is fine for dedup purposes.
-    #     Aplica DESPUÉS del paso 2 para que "Jefe de elaboración..." ya haya sido
-    #     reducido a "Jefe" y este paso sea no-op en ese caso.
-    base = re.sub(
-        r"^(Gestor|Director|Gerente|Coordinador|Jefe|L[ií]der|Supervisor"
-        r"|Responsable|Encargado|Administrador|Representante)\s+de(?:l)?\s+",
-        r"\1 ", base, flags=re.IGNORECASE,
-    )
-
-    # 3. Corrección OCR conocida: VL lee "Ejecución" en vez de "Evacuación"
-    #    "Seguridad y Ejecución" no es un cargo OSCE real.
-    base = re.sub(
-        r"seguridad\s+y\s+ejecuci[oó]n",
-        "seguridad y evacuación", base, flags=re.IGNORECASE,
-    )
-
-    return base.strip().lower()
+# _normalizar_cargo se importa desde src.validation.matching (ver import arriba)
 
 
 def _dedup_personal(lista: list[dict]) -> list[dict]:

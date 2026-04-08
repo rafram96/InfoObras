@@ -56,6 +56,9 @@ INSTRUCCIONES campo por campo:
 - firmante: nombre completo de quien firma el certificado
 - cargo_firmante: cargo de quien firma (Representante Legal, Representante Común, Gerente General, etc.)
 - folio: número de folio impreso al pie de la página (generalmente 3-4 dígitos sueltos, no parte del texto)
+- tipo_obra: sector de la obra según el proyecto. Valores posibles: "salud", "educacion", "vial", "saneamiento", "edificacion", "riego", "transporte", "deportivo", "institucional", "otro". Si no puedes determinar el sector, usa null
+- tipo_intervencion: tipo de intervención según el nombre del proyecto. Valores posibles: "construccion", "mejoramiento", "ampliacion", "rehabilitacion", "supervision", "expediente tecnico", "mantenimiento", "instalacion", "creacion", "otro". Si no puedes determinar, usa null
+- tipo_acreditacion: tipo de documento presentado. Valores posibles: "certificado", "constancia", "contrato", "resolucion", "otro". Si no puedes determinar, usa null
 
 REGLA CRÍTICA: Devuelve ÚNICAMENTE este JSON, sin texto antes ni después.
 Usa exactamente estos nombres de campo. No inventes otros nombres.
@@ -73,7 +76,10 @@ Si no hay certificados en el texto, devuelve la estructura con lista vacía.
       "fecha_emision": "...",
       "firmante": "...",
       "cargo_firmante": "...",
-      "folio": null
+      "folio": null,
+      "tipo_obra": null,
+      "tipo_intervencion": null,
+      "tipo_acreditacion": null
     }}
   ]
 }}
