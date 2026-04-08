@@ -42,6 +42,13 @@ try:
 except ImportError:
     _EXTRACTION_AVAILABLE = False
 
+# ── TDR modules (optional) ──────────────────────────────────────────────────
+try:
+    from src.tdr.extractor.pipeline import extraer_bases
+    _TDR_AVAILABLE = True
+except ImportError:
+    _TDR_AVAILABLE = False
+
 # ── Config ────────────────────────────────────────────────────────────────────
 MOTOR_OCR_PYTHON = os.getenv("MOTOR_OCR_PYTHON")
 MOTOR_OCR_WRAPPER = os.getenv("MOTOR_OCR_WRAPPER")
@@ -65,6 +72,12 @@ if not _EXTRACTION_AVAILABLE:
     logging.warning(
         "Módulos de extracción no disponibles — "
         "se omitirá extracción de datos profesionales."
+    )
+
+if not _TDR_AVAILABLE:
+    logging.warning(
+        "Módulos TDR no disponibles — "
+        "los jobs de tipo 'tdr' no funcionarán."
     )
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -111,6 +124,7 @@ def _init_db() -> None:
                 CREATE TABLE IF NOT EXISTS jobs (
                     id              TEXT PRIMARY KEY,
                     filename        TEXT NOT NULL,
+                    job_type        TEXT NOT NULL DEFAULT 'extraction',
                     pages_from      INTEGER,
                     pages_to        INTEGER,
                     status          TEXT NOT NULL DEFAULT 'pending',
@@ -121,6 +135,18 @@ def _init_db() -> None:
                     progress_stage  TEXT,
                     doc_total_pages INTEGER
                 )
+            """)
+            # Migración: agregar job_type si la tabla ya existe sin esa columna
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'jobs' AND column_name = 'job_type'
+                    ) THEN
+                        ALTER TABLE jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT 'extraction';
+                    END IF;
+                END $$;
             """)
 
 
@@ -387,15 +413,71 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
         pdf_path.unlink(missing_ok=True)
 
 
+# ── TDR Job runner ─────────────────────────────────────────────────────────
+def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
+    """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
+    _update_job(job_id, status="running", progress_pct=1, progress_stage="Iniciando TDR")
+
+    try:
+        _update_job(job_id, progress_pct=10, progress_stage="Leyendo PDF de bases")
+
+        # extraer_bases() maneja internamente: pdfplumber → fallback motor-OCR
+        logger.info("Job %s (TDR): llamando a extraer_bases()...", job_id)
+        tdr_result = extraer_bases(str(pdf_path))
+
+        _update_job(job_id, progress_pct=90, progress_stage="Procesando resultados TDR")
+
+        # Estructurar resultado
+        result = {
+            "job_type": "tdr",
+            "rtm_personal": tdr_result.get("rtm_personal", []),
+            "rtm_postor": tdr_result.get("rtm_postor", []),
+            "factores_evaluacion": tdr_result.get("factores_evaluacion", []),
+            "total_cargos": len(tdr_result.get("rtm_personal", [])),
+            "total_factores": len(tdr_result.get("factores_evaluacion", [])),
+        }
+
+        logger.info(
+            "Job %s (TDR): completado — %d cargos, %d factores",
+            job_id,
+            result["total_cargos"],
+            result["total_factores"],
+        )
+
+        _update_job(
+            job_id,
+            status="done",
+            progress_pct=100,
+            progress_stage="Completado",
+            result=json.dumps(result, ensure_ascii=False, default=str),
+        )
+
+    except Exception as e:
+        logger.exception("Job %s (TDR): error", job_id)
+        _update_job(
+            job_id, status="error", progress_pct=0, progress_stage=None,
+            error=str(e),
+        )
+    finally:
+        pdf_path.unlink(missing_ok=True)
+
+
 # ── Routes: Jobs (OCR + pipeline) ───────────────────────────────────────────
 @app.post("/api/jobs", status_code=201, tags=["Jobs"])
 async def create_job(
     file: UploadFile = File(...),
+    job_type: str = Form("extraction"),
     pages_from: Optional[int] = Form(None),
     pages_to: Optional[int] = Form(None),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Solo se aceptan archivos PDF")
+
+    if job_type not in ("extraction", "tdr", "full"):
+        raise HTTPException(400, f"job_type inválido: {job_type}. Usar: extraction, tdr, full")
+
+    if job_type == "tdr" and not _TDR_AVAILABLE:
+        raise HTTPException(503, "Módulos TDR no disponibles en el servidor")
 
     if pages_from is not None and pages_to is not None:
         if pages_from < 1 or pages_to < pages_from:
@@ -413,12 +495,18 @@ async def create_job(
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO jobs (id, filename, pages_from, pages_to) VALUES (%s,%s,%s,%s)",
-                (job_id, file.filename, pages_from, pages_to),
+                "INSERT INTO jobs (id, filename, job_type, pages_from, pages_to) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (job_id, file.filename, job_type, pages_from, pages_to),
             )
 
-    _executor.submit(_run_job, job_id, pdf_path, pages)
-    return {"id": job_id, "status": "pending"}
+    # Bifurcar según tipo de job
+    if job_type == "tdr":
+        _executor.submit(_run_tdr_job, job_id, pdf_path)
+    else:
+        _executor.submit(_run_job, job_id, pdf_path, pages)
+
+    return {"id": job_id, "status": "pending", "job_type": job_type}
 
 
 @app.get("/api/jobs", tags=["Jobs"])
@@ -426,7 +514,7 @@ async def list_jobs():
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, filename, pages_from, pages_to, status, "
+                "SELECT id, filename, job_type, pages_from, pages_to, status, "
                 "created_at, progress_pct "
                 "FROM jobs ORDER BY created_at DESC LIMIT 50"
             )
@@ -435,6 +523,7 @@ async def list_jobs():
         {
             "id": r["id"],
             "filename": r["filename"],
+            "job_type": r.get("job_type", "extraction"),
             "pages_from": r["pages_from"],
             "pages_to": r["pages_to"],
             "status": r["status"],
@@ -450,7 +539,7 @@ async def get_job(job_id: str):
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, filename, pages_from, pages_to, status, created_at, "
+                "SELECT id, filename, job_type, pages_from, pages_to, status, created_at, "
                 "result, error, progress_pct, progress_stage, doc_total_pages "
                 "FROM jobs WHERE id = %s",
                 (job_id,),
@@ -464,6 +553,7 @@ async def get_job(job_id: str):
     return {
         "id": row["id"],
         "filename": row["filename"],
+        "job_type": row.get("job_type", "extraction"),
         "pages_from": row["pages_from"],
         "pages_to": row["pages_to"],
         "status": row["status"],
