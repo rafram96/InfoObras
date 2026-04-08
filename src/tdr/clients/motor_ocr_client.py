@@ -15,12 +15,13 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Rutas
-# En servidor: D:\proyectos\motor-OCR
-# En laptop: C:\Users\Holbi\Documents\Freelance\proyectos\motor-OCR
-MOTOR_OCR_REPO = Path(r"D:\proyectos\motor-OCR")
-MOTOR_OCR_WRAPPER = MOTOR_OCR_REPO / "subprocess_wrapper.py"
-MOTOR_OCR_PYTHON = MOTOR_OCR_REPO / "venv" / "Scripts" / "python.exe"
+# Rutas — lee del .env (mismas variables que usa src/api/main.py)
+import os
+_ocr_wrapper = os.getenv("MOTOR_OCR_WRAPPER", "")
+_ocr_python = os.getenv("MOTOR_OCR_PYTHON", "")
+MOTOR_OCR_WRAPPER = Path(_ocr_wrapper) if _ocr_wrapper else None
+MOTOR_OCR_PYTHON = Path(_ocr_python) if _ocr_python else None
+MOTOR_OCR_REPO = MOTOR_OCR_WRAPPER.parent if MOTOR_OCR_WRAPPER else None
 
 
 def invoke_motor_ocr(
@@ -74,6 +75,10 @@ def invoke_motor_ocr(
     log_file = Path("motor_ocr.log")
 
     try:
+        if not MOTOR_OCR_WRAPPER or not MOTOR_OCR_PYTHON:
+            raise RuntimeError(
+                "MOTOR_OCR_PYTHON y/o MOTOR_OCR_WRAPPER no configurados en .env"
+            )
         python_exe = str(MOTOR_OCR_PYTHON) if MOTOR_OCR_PYTHON.exists() else sys.executable
         logger.info(f"[motor-OCR] Ejecutando wrapper: {MOTOR_OCR_WRAPPER}")
         logger.info(f"[motor-OCR] Python: {python_exe}")
