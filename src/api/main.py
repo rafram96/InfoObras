@@ -23,6 +23,7 @@ import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -81,10 +82,17 @@ if not _TDR_AVAILABLE:
     )
 
 # ── App ───────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+_LOG_FMT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
+logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+
+# Log a archivo para debug persistente
+_LOG_FILE = Path("data/backend.log")
+_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter(_LOG_FMT))
+logging.getLogger().addHandler(_file_handler)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="InfoObras API", version="0.1.0")
@@ -129,25 +137,32 @@ def _init_db() -> None:
                     pages_to        INTEGER,
                     status          TEXT NOT NULL DEFAULT 'pending',
                     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at      TIMESTAMPTZ,
                     result          JSONB,
                     error           TEXT,
                     progress_pct    INTEGER DEFAULT 0,
                     progress_stage  TEXT,
-                    doc_total_pages INTEGER
+                    doc_total_pages INTEGER,
+                    logs            TEXT
                 )
             """)
-            # Migración: agregar job_type si la tabla ya existe sin esa columna
-            cur.execute("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'jobs' AND column_name = 'job_type'
-                    ) THEN
-                        ALTER TABLE jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT 'extraction';
-                    END IF;
-                END $$;
-            """)
+            # Migraciones: agregar columnas si la tabla ya existe sin ellas
+            for col, definition in [
+                ("job_type", "TEXT NOT NULL DEFAULT 'extraction'"),
+                ("started_at", "TIMESTAMPTZ"),
+                ("logs", "TEXT"),
+            ]:
+                cur.execute(f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'jobs' AND column_name = '{col}'
+                        ) THEN
+                            ALTER TABLE jobs ADD COLUMN {col} {definition};
+                        END IF;
+                    END $$;
+                """)
 
 
 _init_db()
@@ -159,6 +174,18 @@ def _update_job(job_id: str, **fields) -> None:
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(f"UPDATE jobs SET {sets} WHERE id = %s", values)
+
+
+def _append_job_log(job_id: str, message: str) -> None:
+    """Agrega una línea al campo logs del job (para debug en la UI)."""
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    line = f"[{ts}] {message}\n"
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE jobs SET logs = COALESCE(logs, '') || %s WHERE id = %s",
+                (line, job_id),
+            )
 
 
 # ── Progress parser ──────────────────────────────────────────────────────────
@@ -217,7 +244,12 @@ def _parse_progress(job_id: str, line: str) -> None:
 
 # ── Job runner ────────────────────────────────────────────────────────────────
 def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
-    _update_job(job_id, status="running", progress_pct=1, progress_stage="Iniciando")
+    _update_job(
+        job_id, status="running", progress_pct=1,
+        progress_stage="Iniciando",
+        started_at=datetime.now(timezone.utc),
+    )
+    _append_job_log(job_id, "Job iniciado — modo extracción")
 
     job_output_dir = str(OUTPUT_DIR / job_id)
     args_file = results_file = None
@@ -241,6 +273,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             results_file = f.name
 
         logger.info("Job %s: llamando a motor-OCR...", job_id)
+        _append_job_log(job_id, "Iniciando motor-OCR subprocess")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -301,6 +334,8 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             doc["total_pages"],
             len(raw["secciones"]),
         )
+
+        _append_job_log(job_id, f"OCR completado — {doc['total_pages']} págs, {len(raw['secciones'])} profesionales")
 
         # ── Fase 2: Extracción LLM (Pasos 2-3) ─────────────────────────────
         if _EXTRACTION_AVAILABLE:
@@ -389,18 +424,21 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 
     except subprocess.CalledProcessError as e:
         logger.error("Job %s: subprocess falló con código %d", job_id, e.returncode)
+        _append_job_log(job_id, f"ERROR: motor-OCR falló con código {e.returncode}")
         _update_job(
             job_id, status="error", progress_pct=0, progress_stage=None,
             error=f"motor-OCR terminó con error (código {e.returncode})",
         )
     except subprocess.TimeoutExpired:
         logger.error("Job %s: timeout", job_id)
+        _append_job_log(job_id, "ERROR: timeout — procesamiento excedió límite de tiempo")
         _update_job(
             job_id, status="error", progress_pct=0, progress_stage=None,
             error="Timeout: el procesamiento superó el límite de tiempo",
         )
     except Exception as e:
         logger.exception("Job %s: error inesperado", job_id)
+        _append_job_log(job_id, f"ERROR: {e}")
         _update_job(
             job_id, status="error", progress_pct=0, progress_stage=None,
             error=str(e),
@@ -416,14 +454,62 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 # ── TDR Job runner ─────────────────────────────────────────────────────────
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
-    _update_job(job_id, status="running", progress_pct=1, progress_stage="Iniciando TDR")
+    _update_job(
+        job_id, status="running", progress_pct=1,
+        progress_stage="Iniciando TDR",
+        started_at=datetime.now(timezone.utc),
+    )
+    _append_job_log(job_id, "Job iniciado — modo TDR")
 
     try:
-        _update_job(job_id, progress_pct=10, progress_stage="Leyendo PDF de bases")
+        # ── Paso 1: Extraer texto del PDF de bases ──────────────────────────
+        _update_job(job_id, progress_pct=5, progress_stage="Extrayendo texto del PDF")
+        _append_job_log(job_id, "Extrayendo texto con pdfplumber...")
 
-        # extraer_bases() maneja internamente: pdfplumber → fallback motor-OCR
-        logger.info("Job %s (TDR): llamando a extraer_bases()...", job_id)
-        tdr_result = extraer_bases(str(pdf_path))
+        import pdfplumber
+        full_text = ""
+        num_pages = 0
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            num_pages = len(pdf.pages)
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                full_text += f"\n--- Página {page.page_number} ---\n{text}"
+
+        chars_per_page = len(full_text.strip()) / max(num_pages, 1)
+        _append_job_log(
+            job_id,
+            f"pdfplumber: {num_pages} páginas, {int(chars_per_page)} chars/pág promedio",
+        )
+
+        if chars_per_page < 50:
+            _append_job_log(job_id, "Texto insuficiente — PDF probablemente escaneado")
+            _update_job(
+                job_id, progress_pct=10,
+                progress_stage="PDF escaneado — ejecutando OCR",
+            )
+            # Fallback a motor-OCR (mismo flujo que _run_job pero solo para texto)
+            try:
+                from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
+                _append_job_log(job_id, "Invocando motor-OCR para bases escaneadas...")
+                full_text = invoke_motor_ocr(
+                    str(pdf_path), output_dir=str(OUTPUT_DIR),
+                )
+                _append_job_log(job_id, f"motor-OCR completado — {len(full_text)} chars")
+            except Exception as ocr_err:
+                _append_job_log(job_id, f"ERROR motor-OCR: {ocr_err}")
+                raise RuntimeError(
+                    f"PDF escaneado y motor-OCR falló: {ocr_err}"
+                ) from ocr_err
+
+        # ── Paso 2: Extraer requisitos RTM ──────────────────────────────────
+        _update_job(job_id, progress_pct=30, progress_stage="Analizando requisitos TDR")
+        _append_job_log(job_id, "Llamando a extraer_bases()...")
+
+        tdr_result = extraer_bases(
+            full_text,
+            nombre_archivo=pdf_path.name,
+            pdf_path=str(pdf_path),
+        )
 
         _update_job(job_id, progress_pct=90, progress_stage="Procesando resultados TDR")
 
@@ -437,11 +523,14 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
             "total_factores": len(tdr_result.get("factores_evaluacion", [])),
         }
 
+        _append_job_log(
+            job_id,
+            f"TDR completado — {result['total_cargos']} cargos, "
+            f"{result['total_factores']} factores",
+        )
         logger.info(
             "Job %s (TDR): completado — %d cargos, %d factores",
-            job_id,
-            result["total_cargos"],
-            result["total_factores"],
+            job_id, result["total_cargos"], result["total_factores"],
         )
 
         _update_job(
@@ -454,6 +543,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
 
     except Exception as e:
         logger.exception("Job %s (TDR): error", job_id)
+        _append_job_log(job_id, f"ERROR: {e}")
         _update_job(
             job_id, status="error", progress_pct=0, progress_stage=None,
             error=str(e),
@@ -515,7 +605,11 @@ async def list_jobs():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, filename, job_type, pages_from, pages_to, status, "
-                "created_at, progress_pct "
+                "created_at, progress_pct, "
+                "CASE "
+                "  WHEN job_type = 'tdr' THEN (result->>'total_cargos')::int "
+                "  ELSE jsonb_array_length(COALESCE(result->'secciones', '[]'::jsonb)) "
+                "END AS profesionales_count "
                 "FROM jobs ORDER BY created_at DESC LIMIT 50"
             )
             rows = cur.fetchall()
@@ -529,6 +623,7 @@ async def list_jobs():
             "status": r["status"],
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "progress_pct": r["progress_pct"] or 0,
+            "profesionales_count": r.get("profesionales_count"),
         }
         for r in rows
     ]
@@ -539,8 +634,9 @@ async def get_job(job_id: str):
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, filename, job_type, pages_from, pages_to, status, created_at, "
-                "result, error, progress_pct, progress_stage, doc_total_pages "
+                "SELECT id, filename, job_type, pages_from, pages_to, status, "
+                "created_at, started_at, result, error, progress_pct, "
+                "progress_stage, doc_total_pages, logs "
                 "FROM jobs WHERE id = %s",
                 (job_id,),
             )
@@ -550,6 +646,7 @@ async def get_job(job_id: str):
     result_data = row["result"]
     if isinstance(result_data, str):
         result_data = json.loads(result_data)
+    started = row.get("started_at")
     return {
         "id": row["id"],
         "filename": row["filename"],
@@ -558,11 +655,13 @@ async def get_job(job_id: str):
         "pages_to": row["pages_to"],
         "status": row["status"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "started_at": started.isoformat() if started else None,
         "result": result_data,
         "error": row["error"],
         "progress_pct": row["progress_pct"] or 0,
         "progress_stage": row["progress_stage"],
         "doc_total_pages": row["doc_total_pages"],
+        "logs": row.get("logs"),
     }
 
 
