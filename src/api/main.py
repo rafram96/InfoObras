@@ -356,8 +356,11 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                 result=json.dumps(result, ensure_ascii=False),
             )
 
-            prof_files = list(Path(job_output_dir).rglob("*_profesionales_*.md"))
-            texto_files = list(Path(job_output_dir).rglob("*_texto_*.md"))
+            # Buscar archivos específicos — el prefijo contiene "Profesionales"
+            # así que hay que filtrar para que no matchee métricas/segmentación
+            all_md = list(Path(job_output_dir).rglob("*.md"))
+            prof_files = [f for f in all_md if "_profesionales_" in f.name.lower() and "_metricas_" not in f.name.lower() and "_segmentacion_" not in f.name.lower() and "_texto_" not in f.name.lower()]
+            texto_files = [f for f in all_md if "_texto_" in f.name.lower()]
 
             logger.info(
                 "Job %s: archivos encontrados — prof=%s, texto=%s",
