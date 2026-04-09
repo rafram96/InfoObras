@@ -359,6 +359,13 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             prof_files = list(Path(job_output_dir).rglob("*_profesionales_*.md"))
             texto_files = list(Path(job_output_dir).rglob("*_texto_*.md"))
 
+            logger.info(
+                "Job %s: archivos encontrados — prof=%s, texto=%s",
+                job_id,
+                [f.name for f in prof_files],
+                [f.name for f in texto_files],
+            )
+
             if prof_files and texto_files:
                 try:
                     blocks = parse_professional_blocks(prof_files[0], texto_files[0])
