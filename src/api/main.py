@@ -109,6 +109,8 @@ app.add_middleware(
 
 # Un solo worker: GPU única en el servidor
 _executor = ThreadPoolExecutor(max_workers=1)
+# Jobs cancelados — los runners revisan este set y abortan si encuentran su ID
+_cancelled_jobs: set[str] = set()
 
 
 # ── DB (PostgreSQL) ──────────────────────────────────────────────────────────
@@ -166,6 +168,13 @@ def _init_db() -> None:
 
 
 _init_db()
+
+
+def _check_cancelled(job_id: str) -> None:
+    """Lanza excepción si el job fue cancelado (borrado mientras estaba en cola/running)."""
+    if job_id in _cancelled_jobs:
+        _cancelled_jobs.discard(job_id)
+        raise RuntimeError("Job cancelado por el usuario")
 
 
 def _update_job(job_id: str, **fields) -> None:
@@ -244,6 +253,7 @@ def _parse_progress(job_id: str, line: str) -> None:
 
 # ── Job runner ────────────────────────────────────────────────────────────────
 def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
+    _check_cancelled(job_id)
     _update_job(
         job_id, status="running", progress_pct=1,
         progress_stage="Iniciando",
@@ -454,6 +464,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 # ── TDR Job runner ─────────────────────────────────────────────────────────
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
+    _check_cancelled(job_id)
     _update_job(
         job_id, status="running", progress_pct=1,
         progress_stage="Iniciando TDR",
@@ -669,9 +680,15 @@ async def get_job(job_id: str):
 async def delete_job(job_id: str):
     with _get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
-            if not cur.fetchone():
+            cur.execute("SELECT id, status FROM jobs WHERE id = %s", (job_id,))
+            row = cur.fetchone()
+            if not row:
                 raise HTTPException(404, "Job no encontrado")
+            # Si el job está pending o running, marcarlo como cancelado
+            # para que el worker lo aborte cuando lo tome o en su próximo checkpoint
+            if row[1] in ("pending", "running"):
+                _cancelled_jobs.add(job_id)
+                logger.info("Job %s: marcado como cancelado", job_id)
             cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
     job_dir = OUTPUT_DIR / job_id
     if job_dir.exists():
