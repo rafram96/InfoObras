@@ -18,11 +18,19 @@ _SEPARATOR_RE = re.compile(r"\*\*Página separadora:\*\*\s*(\d+)")
 _TOTAL_PAGES_RE = re.compile(r"\*\*Total páginas:\*\*\s*(\d+)")
 _NUMERO_RE = re.compile(r"N[°º]\s*(\d+)", re.IGNORECASE)
 _PAGE_HEADER_RE = re.compile(r"^##\s+Página\s+(\d+)", re.MULTILINE)
-# Tabla del resumen: | # | Cargo | Págs | Pág. inicio | Pág. fin |
-_TABLE_ROW_RE = re.compile(
+# Tabla del resumen — soporta dos formatos:
+# Formato viejo (5 cols): | # | Cargo | Págs | Pág. inicio | Pág. fin |
+_TABLE_ROW_OLD_RE = re.compile(
     r"^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|",
     re.MULTILINE,
 )
+# Formato nuevo (6 cols): | # | Cargo | N° | Págs totales | Bloques | Pág. inicio |
+_TABLE_ROW_NEW_RE = re.compile(
+    r"^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*[^|]*\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\|",
+    re.MULTILINE,
+)
+# Rangos dentro de la columna Bloques: "46–63 · 81–88 · 142–155" o "1–14"
+_BLOQUE_RANGE_RE = re.compile(r"(\d+)\s*[–\-]\s*(\d+)")
 
 
 def parse_page_texts(texto_path: Path) -> dict[int, str]:
@@ -63,17 +71,38 @@ def _clean_cargo(cargo_raw: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
-def _parse_summary_table(content: str) -> dict[int, tuple[int, int]]:
+def _parse_summary_table(content: str) -> dict[int, list[tuple[int, int]]]:
     """
-    Parsea la tabla de resumen del formato nuevo.
-    Retorna {indice: (pag_inicio, pag_fin)}.
+    Parsea la tabla de resumen.
+    Retorna {indice: [(pag_inicio, pag_fin), ...]}.
+
+    Soporta dos formatos:
+    - Viejo (5 cols): | # | Cargo | Págs | Pág. inicio | Pág. fin |
+    - Nuevo (6 cols): | # | Cargo | N° | Págs totales | Bloques | Pág. inicio |
     """
-    table: dict[int, tuple[int, int]] = {}
-    for match in _TABLE_ROW_RE.finditer(content):
+    table: dict[int, list[tuple[int, int]]] = {}
+
+    # Intenta formato nuevo primero (tiene columna Bloques con rangos explícitos)
+    for match in _TABLE_ROW_NEW_RE.finditer(content):
+        idx = int(match.group(1))
+        bloques_text = match.group(4)  # e.g. "46–63 · 81–88 · 142–155" o "1–14"
+        ranges = [
+            (int(m.group(1)), int(m.group(2)))
+            for m in _BLOQUE_RANGE_RE.finditer(bloques_text)
+        ]
+        if ranges:
+            table[idx] = ranges
+
+    if table:
+        return table
+
+    # Fallback: formato viejo (Pág. inicio / Pág. fin como columnas separadas)
+    for match in _TABLE_ROW_OLD_RE.finditer(content):
         idx = int(match.group(1))
         pag_inicio = int(match.group(4))
         pag_fin = int(match.group(5))
-        table[idx] = (pag_inicio, pag_fin)
+        table[idx] = [(pag_inicio, pag_fin)]
+
     return table
 
 
@@ -119,13 +148,13 @@ def parse_professional_blocks(
         for match in _RANGE_RE.finditer(section):
             page_ranges.append((int(match.group(1)), int(match.group(2))))
 
-        # Si no hay rangos, usa la tabla de resumen (formato nuevo)
+        # Si no hay rangos, usa la tabla de resumen
         if not page_ranges and index in summary_table:
-            pag_inicio, pag_fin = summary_table[index]
-            # Excluye la página separadora del rango de contenido
-            content_start = separator_page + 1 if separator_page >= pag_inicio else pag_inicio
-            if content_start <= pag_fin:
-                page_ranges.append((content_start, pag_fin))
+            for pag_inicio, pag_fin in summary_table[index]:
+                # Excluye la página separadora del rango de contenido
+                content_start = separator_page + 1 if separator_page == pag_inicio else pag_inicio
+                if content_start <= pag_fin:
+                    page_ranges.append((content_start, pag_fin))
 
         if not page_ranges:
             continue
