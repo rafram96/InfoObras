@@ -430,3 +430,268 @@ def buscar_obras_por_nombre(nombre: str) -> list[dict]:
     except Exception as e:
         logger.error("InfoObras: error buscando por nombre '%s': %s", nombre, e)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Similitud de nombres (Jaccard sobre tokens)
+# ---------------------------------------------------------------------------
+
+def _normalizar_tokens(texto: str) -> set[str]:
+    """Normaliza texto a set de tokens para comparación Jaccard."""
+    import unicodedata
+    t = unicodedata.normalize("NFD", texto.upper())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^A-Z0-9\s]", "", t)
+    return set(t.split())
+
+
+def _jaccard(a: str, b: str) -> float:
+    """Similitud Jaccard entre dos textos (0.0 a 1.0)."""
+    t1 = _normalizar_tokens(a)
+    t2 = _normalizar_tokens(b)
+    if not t1 or not t2:
+        return 0.0
+    return len(t1 & t2) / len(t1 | t2)
+
+
+# ---------------------------------------------------------------------------
+# Desambiguación: elegir la obra correcta de múltiples resultados
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ObraCandidata:
+    """Resultado de búsqueda con score de relevancia."""
+    obra_raw: dict
+    obra_id: int
+    nombre: str
+    cui: str
+    estado: str
+    fecha_inicio: Optional[date]
+    entidad: str
+    score: float = 0.0
+    motivos: list[str] = field(default_factory=list)
+
+
+def _extraer_palabras_clave(nombre_proyecto: str) -> str:
+    """
+    Extrae palabras clave de un nombre de proyecto para búsqueda.
+
+    "MEJORAMIENTO Y AMPLIACIÓN DE LOS SERVICIOS DE SALUD DEL HOSPITAL
+     DE APOYO DE POMABAMBA ANTONIO CALDAS DOMÍNGUEZ..."
+    → "HOSPITAL POMABAMBA" (palabras más específicas)
+    """
+    import unicodedata
+    t = unicodedata.normalize("NFD", nombre_proyecto.upper())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+    # Quitar palabras genéricas que no ayudan en la búsqueda
+    stopwords = {
+        "MEJORAMIENTO", "AMPLIACION", "CONSTRUCCION", "CREACION",
+        "REHABILITACION", "REMODELACION", "INSTALACION", "RECUPERACION",
+        "DE", "DEL", "LA", "LAS", "LOS", "EL", "EN", "AL", "CON",
+        "PARA", "POR", "A", "UN", "UNA", "Y", "O", "E",
+        "SERVICIOS", "SALUD", "OBRA", "PROYECTO", "EJECUCION",
+        "SUPERVISION", "CONSULTORIA", "SERVICIO",
+        "CAPACIDAD", "RESOLUTIVA", "PRESTACION", "ACCESO",
+        "DISTRITO", "PROVINCIA", "DEPARTAMENTO", "REGION",
+    }
+
+    tokens = re.sub(r"[^A-Z0-9\s]", "", t).split()
+    keywords = [w for w in tokens if w not in stopwords and len(w) > 2]
+
+    # Tomar las primeras 3-4 palabras clave más específicas
+    return " ".join(keywords[:4])
+
+
+def _score_candidata(
+    obra: dict,
+    nombre_proyecto: str,
+    fecha_cert: Optional[date] = None,
+    entidad: Optional[str] = None,
+) -> ObraCandidata:
+    """
+    Calcula un score de relevancia para una obra candidata.
+
+    Criterios (en orden de peso):
+    1. Similitud de nombre (Jaccard) → 0-50 puntos
+    2. Proximidad de fecha inicio → 0-30 puntos
+    3. Coincidencia de entidad → 0-20 puntos
+    """
+    nombre_obra = obra.get("nombrObra", "")
+    cui = obra.get("codUniqInv", "")
+    obra_id = obra.get("codigoObra", 0)
+    estado = obra.get("estObra", "")
+    entidad_obra = obra.get("nombreEntidad", "")
+    fecha_inicio = _parse_timestamp_json(obra.get("fechaIniObra"))
+
+    score = 0.0
+    motivos = []
+
+    # 1. Similitud de nombre (peso: 50%)
+    sim_nombre = _jaccard(nombre_proyecto, nombre_obra)
+    score_nombre = sim_nombre * 50
+    score += score_nombre
+    motivos.append(f"nombre={sim_nombre:.2f}")
+
+    # 2. Proximidad de fecha (peso: 30%)
+    # La obra cuya fecha_inicio sea más cercana y ANTERIOR a la fecha del certificado
+    if fecha_cert and fecha_inicio:
+        diff_dias = (fecha_cert - fecha_inicio).days
+        if 0 <= diff_dias <= 365 * 10:
+            # Fecha inicio es anterior al certificado (correcto)
+            # Más cercana = más puntos (máx 30 si diff < 1 año)
+            score_fecha = max(0, 30 - (diff_dias / 365) * 3)
+            score += score_fecha
+            motivos.append(f"fecha_diff={diff_dias}d (+{score_fecha:.0f})")
+        elif diff_dias < 0:
+            # Obra empezó DESPUÉS del certificado → penalizar
+            motivos.append(f"fecha_posterior (-10)")
+            score -= 10
+        else:
+            # Más de 10 años de diferencia → poco probable
+            motivos.append(f"fecha_lejana={diff_dias}d")
+
+    # 3. Coincidencia de entidad (peso: 20%)
+    if entidad and entidad_obra:
+        sim_entidad = _jaccard(entidad, entidad_obra)
+        score_entidad = sim_entidad * 20
+        score += score_entidad
+        if sim_entidad > 0.3:
+            motivos.append(f"entidad={sim_entidad:.2f}")
+
+    return ObraCandidata(
+        obra_raw=obra,
+        obra_id=obra_id,
+        nombre=nombre_obra,
+        cui=cui,
+        estado=estado,
+        fecha_inicio=fecha_inicio,
+        entidad=entidad_obra,
+        score=score,
+        motivos=motivos,
+    )
+
+
+def buscar_obra_por_certificado(
+    project_name: str,
+    cert_date: Optional[date] = None,
+    entidad: Optional[str] = None,
+    min_score: float = 15.0,
+) -> Optional[WorkInfo]:
+    """
+    Busca una obra en InfoObras a partir del nombre del proyecto en un certificado.
+
+    Estrategia:
+    1. Extraer palabras clave del nombre del proyecto
+    2. Buscar en InfoObras por nombre
+    3. Rankear resultados por similitud + proximidad de fecha + entidad
+    4. Si el mejor candidato supera min_score → fetch datos completos
+    5. Si no → retorna None (para confirmación manual en UI)
+
+    Args:
+        project_name: nombre del proyecto según el certificado
+        cert_date: fecha de emisión del certificado (para desambiguación)
+        entidad: nombre de la entidad contratante (para desambiguación)
+        min_score: score mínimo para aceptar un candidato (default 15.0)
+
+    Returns:
+        WorkInfo con datos completos si se encontró un match sólido, None si no.
+    """
+    if not project_name or len(project_name.strip()) < 10:
+        logger.warning("InfoObras: nombre de proyecto muy corto para buscar: '%s'", project_name)
+        return None
+
+    # 1. Extraer palabras clave
+    keywords = _extraer_palabras_clave(project_name)
+    if not keywords:
+        logger.warning("InfoObras: no se extrajeron palabras clave de '%s'", project_name[:60])
+        return None
+
+    logger.info("InfoObras: buscando por keywords '%s' (de '%s')", keywords, project_name[:60])
+
+    # 2. Buscar en InfoObras
+    resultados = buscar_obras_por_nombre(keywords)
+
+    if not resultados:
+        # Reintentar con menos palabras
+        keywords_corto = " ".join(keywords.split()[:2])
+        if keywords_corto != keywords:
+            logger.info("InfoObras: reintentando con '%s'", keywords_corto)
+            resultados = buscar_obras_por_nombre(keywords_corto)
+
+    if not resultados:
+        logger.info("InfoObras: sin resultados para '%s'", project_name[:60])
+        return None
+
+    logger.info("InfoObras: %d resultados encontrados", len(resultados))
+
+    # 3. Rankear candidatos
+    candidatos = [
+        _score_candidata(obra, project_name, cert_date, entidad)
+        for obra in resultados
+    ]
+    candidatos.sort(key=lambda c: c.score, reverse=True)
+
+    # Log top 3
+    for i, c in enumerate(candidatos[:3]):
+        logger.info(
+            "InfoObras: candidato %d — score=%.1f — %s [%s]",
+            i + 1, c.score, c.nombre[:60], ", ".join(c.motivos),
+        )
+
+    mejor = candidatos[0]
+
+    # 4. Verificar score mínimo
+    if mejor.score < min_score:
+        logger.info(
+            "InfoObras: mejor candidato score=%.1f < %.1f mínimo — requiere confirmación manual",
+            mejor.score, min_score,
+        )
+        return None
+
+    # 5. Verificar que no haya ambigüedad (segundo candidato muy cercano)
+    if len(candidatos) > 1:
+        segundo = candidatos[1]
+        if segundo.score > 0 and (mejor.score - segundo.score) < 5.0:
+            logger.info(
+                "InfoObras: ambigüedad — score1=%.1f vs score2=%.1f (diff=%.1f) — requiere confirmación",
+                mejor.score, segundo.score, mejor.score - segundo.score,
+            )
+            # Aún así retornamos el mejor, pero se podría marcar como ambiguo
+            pass
+
+    # 6. Fetch datos completos
+    logger.info(
+        "InfoObras: seleccionado CUI=%s (score=%.1f) — descargando datos completos",
+        mejor.cui, mejor.score,
+    )
+
+    if mejor.cui:
+        return fetch_by_cui(mejor.cui)
+    else:
+        # Sin CUI pero con obra_id — fetch directo por obra_id
+        try:
+            session = _crear_session()
+            time.sleep(_DELAY)
+            datos = _extraer_datos_ejecucion(session, mejor.obra_id)
+            supervisores = _procesar_supervisores(datos.get("lSupervisor", []))
+            residentes = _procesar_residentes(datos.get("lResidente", []))
+            avances = _procesar_avances(datos.get("lAvances", []))
+            suspension_periods = _extraer_periodos_suspension(avances)
+
+            return WorkInfo(
+                cui=mejor.cui or "",
+                obra_id=mejor.obra_id,
+                nombre=mejor.nombre,
+                estado=mejor.estado,
+                entidad=mejor.entidad,
+                fecha_inicio=mejor.fecha_inicio,
+                supervisores=supervisores,
+                residentes=residentes,
+                avances=avances,
+                suspension_periods=suspension_periods,
+                raw_busqueda=mejor.obra_raw,
+            )
+        except Exception as e:
+            logger.error("InfoObras: error descargando datos de ObraId %s: %s", mejor.obra_id, e)
+            return None
