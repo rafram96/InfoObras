@@ -299,6 +299,107 @@ _PERIODO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Parseo de fechas españolas → date
+# ---------------------------------------------------------------------------
+from datetime import date as _date
+
+_MES_ES: dict[str, int] = {
+    "enero": 1, "ene": 1,
+    "febrero": 2, "feb": 2,
+    "marzo": 3, "mar": 3,
+    "abril": 4, "abr": 4,
+    "mayo": 5, "may": 5,
+    "junio": 6, "jun": 6,
+    "julio": 7, "jul": 7,
+    "agosto": 8, "ago": 8,
+    "septiembre": 9, "setiembre": 9, "sep": 9, "set": 9,
+    "octubre": 10, "oct": 10,
+    "noviembre": 11, "nov": 11,
+    "diciembre": 12, "dic": 12,
+}
+
+# Patrones comunes del LLM:
+#   "10 de enero del 2023"    "01/ENE/2018"    "15/03/2020"
+#   "01 de Octubre del 2020"  "31.12.2019"     "2023-01-15"
+_FECHA_PATTERNS = [
+    # "10 de enero del 2023" / "10 de enero de 2023"
+    re.compile(
+        r"(\d{1,2})\s+de\s+(\w+)\s+(?:del?\s+)?(\d{4})",
+        re.IGNORECASE,
+    ),
+    # "01/ENE/2018" o "01-ENE-2018"
+    re.compile(
+        r"(\d{1,2})[/\-](\w{3,})[/\-](\d{4})",
+        re.IGNORECASE,
+    ),
+    # "15/03/2020" o "15.03.2020" o "15-03-2020"
+    re.compile(
+        r"(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})",
+    ),
+    # "2023-01-15" (ISO)
+    re.compile(
+        r"(\d{4})[/.\-](\d{1,2})[/.\-](\d{1,2})",
+    ),
+]
+
+
+def _parsear_fecha(texto: str | None) -> _date | None:
+    """
+    Intenta parsear una fecha en español a date.
+    Retorna None si no puede (incluyendo "a la fecha", null, etc.)
+    """
+    if not texto or not isinstance(texto, str):
+        return None
+
+    t = texto.strip().lower()
+
+    # "a la fecha" / "a la actualidad" / "actualmente" → sin fecha fin
+    if "a la fecha" in t or "actualidad" in t or "actualmente" in t or "presente" in t:
+        return None
+
+    # Patrón 1: "10 de enero del 2023"
+    m = _FECHA_PATTERNS[0].search(t)
+    if m:
+        dia, mes_txt, anio = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        mes = _MES_ES.get(mes_txt)
+        if mes:
+            try:
+                return _date(anio, mes, dia)
+            except ValueError:
+                pass
+
+    # Patrón 2: "01/ENE/2018"
+    m = _FECHA_PATTERNS[1].search(t)
+    if m:
+        dia, mes_txt, anio = int(m.group(1)), m.group(2).lower(), int(m.group(3))
+        mes = _MES_ES.get(mes_txt)
+        if mes:
+            try:
+                return _date(anio, mes, dia)
+            except ValueError:
+                pass
+
+    # Patrón 3: "15/03/2020"
+    m = _FECHA_PATTERNS[2].search(texto.strip())  # sin lowercase (no hay meses)
+    if m:
+        dia, mes, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return _date(anio, mes, dia)
+        except ValueError:
+            pass
+
+    # Patrón 4: "2023-01-15" (ISO)
+    m = _FECHA_PATTERNS[3].search(texto.strip())
+    if m:
+        anio, mes, dia = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return _date(anio, mes, dia)
+        except ValueError:
+            pass
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Validación
@@ -380,6 +481,17 @@ def _normalizar_experiencia(exp: dict) -> dict:
         else:
             normalizada["fecha_inicio"] = periodo
             normalizada["fecha_fin"] = None
+
+    # Parsear fechas de string a date (para que el Paso 4 funcione)
+    # Guarda tanto el string crudo (_raw) como el date parseado
+    for campo_fecha in ("fecha_inicio", "fecha_fin", "fecha_emision"):
+        raw = normalizada.get(campo_fecha)
+        if raw and isinstance(raw, str):
+            normalizada[f"{campo_fecha}_raw"] = raw  # preservar texto original
+            parsed = _parsear_fecha(raw)
+            normalizada[f"{campo_fecha}_parsed"] = (
+                parsed.isoformat() if parsed else None
+            )
 
     # Rellena campos faltantes con null para mantener schema consistente
     for campo in _PASO3_CAMPOS:

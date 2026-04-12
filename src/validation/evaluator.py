@@ -25,6 +25,7 @@ from src.validation.matching import (
     match_intervencion,
     inferir_tipo_obra,
     inferir_intervencion,
+    _son_cargos_sinonimos,
 )
 
 
@@ -66,7 +67,12 @@ def _buscar_requisito(
         if cargo_norm in norm or norm in cargo_norm:
             return req
 
-    # 3. Similitud por overlap de tokens (Jaccard)
+    # 3. Sinónimos de cargo OSCE
+    for norm, req in pares:
+        if _son_cargos_sinonimos(profesional.role, req.cargo):
+            return req
+
+    # 4. Similitud por overlap de tokens (Jaccard)
     tokens_prof = set(cargo_norm.split())
     mejor_score = 0.0
     mejor_req = None

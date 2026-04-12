@@ -236,6 +236,62 @@ def match_profesion(
 # Comparación de cargos
 # ---------------------------------------------------------------------------
 
+# Sinónimos de cargo OSCE: cargos que son equivalentes o variantes del mismo rol.
+# Cada grupo es un set de tokens normalizados que se consideran intercambiables.
+SINONIMOS_CARGO: list[set[str]] = [
+    # BIM
+    {"especialista bim", "gestor bim", "coordinador bim", "lider bim",
+     "supervisor bim", "bim manager", "ingeniero bim", "arquitecto bim",
+     "especialista bim manager", "especialista bim management"},
+    # Costos / Metrados / Presupuestos / Valorizaciones
+    {"especialista en costos", "especialista en costos y presupuestos",
+     "especialista en metrados", "especialista en metrados costos y valorizaciones",
+     "especialista en costos metrados y valorizaciones",
+     "especialista en metrados costos y presupuestos"},
+    # Equipamiento
+    {"especialista en equipamiento", "especialista en equipamiento y mobiliario",
+     "especialista en equipamiento biomedico",
+     "especialista en equipamiento medico hospitalario",
+     "ingeniero especialista en equipamiento medico hospitalario"},
+    # Seguridad
+    {"especialista en seguridad", "especialista en seguridad y medio ambiente",
+     "especialista de seguridad y medio ambiente",
+     "especialista en seguridad salud y medio ambiente",
+     "especialista en seguridad y salud ocupacional",
+     "especialista ssoma"},
+    # Supervisión / Jefatura
+    {"jefe de supervision", "jefe supervisor", "supervisor de obra",
+     "jefe de elaboracion del expediente tecnico", "jefe"},
+    # Instalaciones eléctricas / electromecánicas
+    {"especialista en instalaciones electricas",
+     "especialista electromecanico",
+     "ingeniero especialista en instalaciones electricas",
+     "ingeniero especialista en instalaciones electricas y mecanicas",
+     "ingeniero especialista en instalaciones electricas y electromecanicas",
+     "ingeniero electrico"},
+    # Comunicaciones / TIC
+    {"especialista en comunicaciones",
+     "especialista en tecnologias de la informacion",
+     "especialista en tecnologias de la informacion y comunicacion",
+     "especialista en cableado estructurado",
+     "especialista en redes de cableado estructurado y comunicaciones",
+     "especialista en configuraciones tecnologicas"},
+]
+
+
+def _son_cargos_sinonimos(cargo_a: str, cargo_b: str) -> bool:
+    """Retorna True si ambos cargos pertenecen al mismo grupo de sinónimos."""
+    norm_a = normalizar_texto(cargo_a)
+    norm_b = normalizar_texto(cargo_b)
+    for grupo in SINONIMOS_CARGO:
+        # Buscar si algún sinónimo del grupo está contenido en cada cargo
+        match_a = any(sin in norm_a or norm_a in sin for sin in grupo)
+        match_b = any(sin in norm_b or norm_b in sin for sin in grupo)
+        if match_a and match_b:
+            return True
+    return False
+
+
 def match_cargo(
     cargo_experiencia: Optional[str],
     cargos_validos: Optional[list[str]],
@@ -246,10 +302,10 @@ def match_cargo(
     Reglas:
     - Si cargos_validos es None o vacío → True (favorabilidad OSCE)
     - Si cargo_experiencia es None pero hay cargos_validos → False
-    - Normaliza con normalizar_cargo() y compara:
-      1. Match exacto
-      2. Cargo experiencia contenido en cargo válido
-      3. Cargo válido contenido en cargo experiencia
+    - Compara en orden de prioridad:
+      1. Match exacto (normalizado)
+      2. Substring bidireccional
+      3. Sinónimos de cargo OSCE
     """
     if not cargos_validos:
         return True
@@ -265,6 +321,11 @@ def match_cargo(
             return True
         # Substring bidireccional
         if norm_exp in norm_val or norm_val in norm_exp:
+            return True
+
+    # Sinónimos de cargo
+    for valido in cargos_validos:
+        if _son_cargos_sinonimos(cargo_experiencia, valido):
             return True
 
     return False

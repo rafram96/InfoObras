@@ -15,6 +15,9 @@ import psycopg2
 from dotenv import load_dotenv
 import os
 
+# Importar parser de fechas
+from src.extraction.llm_extractor import _parsear_fecha
+
 load_dotenv()
 
 DATABASE_URL = os.getenv(
@@ -23,7 +26,7 @@ DATABASE_URL = os.getenv(
 )
 
 # IDs de los jobs a cruzar
-EXTRACTION_JOB = "44bfcf36"  # Profesionales.pdf
+EXTRACTION_JOB = "6c1f0fe9"  # Profesionales.pdf (nuevo, con 12 profesionales extraídos)
 TDR_JOB = "1a5495be"         # Bases del concurso
 
 # Fecha ficticia de propuesta (ajustar si se conoce la real)
@@ -92,6 +95,40 @@ def main():
         profesionales.append(prof)
 
         for exp_data in sec.get("experiencias", []):
+            # Parsear fechas: usar _parsed si existe, sino parsear el string crudo
+            start = None
+            end = None
+            cert = None
+
+            # Intentar fecha parseada primero, luego parsear el string
+            start_str = exp_data.get("fecha_inicio_parsed") or exp_data.get("fecha_inicio")
+            end_str = exp_data.get("fecha_fin_parsed") or exp_data.get("fecha_fin")
+            cert_str = exp_data.get("fecha_emision_parsed") or exp_data.get("fecha_emision")
+
+            if isinstance(start_str, str) and len(start_str) == 10 and "-" in start_str:
+                try:
+                    start = date.fromisoformat(start_str)
+                except ValueError:
+                    pass
+            if not start:
+                start = _parsear_fecha(exp_data.get("fecha_inicio"))
+
+            if isinstance(end_str, str) and len(end_str) == 10 and "-" in end_str:
+                try:
+                    end = date.fromisoformat(end_str)
+                except ValueError:
+                    pass
+            if not end:
+                end = _parsear_fecha(exp_data.get("fecha_fin"))
+
+            if isinstance(cert_str, str) and len(cert_str) == 10 and "-" in cert_str:
+                try:
+                    cert = date.fromisoformat(cert_str)
+                except ValueError:
+                    pass
+            if not cert:
+                cert = _parsear_fecha(exp_data.get("fecha_emision"))
+
             exp = Experience(
                 professional_name=nombre,
                 dni=prof_data.get("dni"),
@@ -99,9 +136,9 @@ def main():
                 role=exp_data.get("cargo"),
                 company=exp_data.get("empresa_emisora"),
                 ruc=exp_data.get("ruc"),
-                start_date=None,  # fechas crudas, no parseadas aún
-                end_date=None,
-                cert_issue_date=None,
+                start_date=start,
+                end_date=end,
+                cert_issue_date=cert,
                 folio=exp_data.get("folio"),
                 cui=None,
                 infoobras_code=None,
