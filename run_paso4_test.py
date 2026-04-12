@@ -232,6 +232,19 @@ def main():
     print(f"  Total alertas:           {total_alertas}")
     print(f"{'=' * 70}")
 
+    # ── Generar Excel ─────────────────────────────────────────────────────
+    from src.reporting.excel_writer import write_report
+    from pathlib import Path
+
+    output_path = Path("data/test_paso4_resultado.xlsx")
+    write_report(
+        resultados=resultados,
+        output_path=output_path,
+        proposal_date=PROPOSAL_DATE,
+        filename="Profesionales.pdf",
+    )
+    print(f"\n📊 Excel generado: {output_path.absolute()}")
+
 
 if __name__ == "__main__":
     main()

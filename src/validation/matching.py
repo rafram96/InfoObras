@@ -279,16 +279,44 @@ SINONIMOS_CARGO: list[set[str]] = [
 ]
 
 
+def _normalizar_cargo_sinonimo(texto: str) -> str:
+    """
+    Normalización específica para matching de sinónimos de cargo.
+    Más suave que normalizar_texto — NO quita stopwords, solo lowercase + sin acentos.
+    """
+    if not texto:
+        return ""
+    t = _strip_acentos(texto).lower().strip()
+    # Quitar puntuación pero mantener espacios y palabras completas
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 def _son_cargos_sinonimos(cargo_a: str, cargo_b: str) -> bool:
     """Retorna True si ambos cargos pertenecen al mismo grupo de sinónimos."""
-    norm_a = normalizar_texto(cargo_a)
-    norm_b = normalizar_texto(cargo_b)
+    norm_a = _normalizar_cargo_sinonimo(cargo_a)
+    norm_b = _normalizar_cargo_sinonimo(cargo_b)
+
     for grupo in SINONIMOS_CARGO:
-        # Buscar si algún sinónimo del grupo está contenido en cada cargo
         match_a = any(sin in norm_a or norm_a in sin for sin in grupo)
         match_b = any(sin in norm_b or norm_b in sin for sin in grupo)
         if match_a and match_b:
             return True
+
+    # Fallback: comparar tokens (Jaccard) contra los sinónimos
+    # Esto cubre typos del OCR como "METRADOSY" (sin espacio)
+    tokens_a = set(norm_a.split())
+    tokens_b = set(norm_b.split())
+    for grupo in SINONIMOS_CARGO:
+        for sin in grupo:
+            tokens_sin = set(sin.split())
+            # Si comparten ≥60% de tokens con el mismo sinónimo, matchean
+            overlap_a = len(tokens_a & tokens_sin) / max(len(tokens_sin), 1)
+            overlap_b = len(tokens_b & tokens_sin) / max(len(tokens_sin), 1)
+            if overlap_a >= 0.6 and overlap_b >= 0.6:
+                return True
+
     return False
 
 

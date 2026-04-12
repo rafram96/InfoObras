@@ -686,6 +686,161 @@ async def get_job(job_id: str):
     }
 
 
+# ── Evaluación RTM (Paso 4) + Excel ──────────────────────────────────────────
+
+@app.post("/api/jobs/{extraction_job_id}/evaluate", tags=["Evaluation"])
+async def evaluate_job(
+    extraction_job_id: str,
+    tdr_job_id: str = Form(...),
+):
+    """
+    Ejecuta el Paso 4 (evaluación RTM) cruzando un job de extracción con un job TDR.
+    Genera un Excel descargable con los resultados.
+
+    Requiere:
+    - extraction_job_id: ID de un job tipo 'extraction' completado
+    - tdr_job_id: ID de un job tipo 'tdr' completado
+    """
+    from datetime import date as _date
+
+    # Cargar ambos jobs
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, job_type, status, result, filename FROM jobs WHERE id = %s",
+                (extraction_job_id,),
+            )
+            ext_row = cur.fetchone()
+            cur.execute(
+                "SELECT id, job_type, status, result FROM jobs WHERE id = %s",
+                (tdr_job_id,),
+            )
+            tdr_row = cur.fetchone()
+
+    if not ext_row:
+        raise HTTPException(404, f"Job de extracción {extraction_job_id} no encontrado")
+    if not tdr_row:
+        raise HTTPException(404, f"Job TDR {tdr_job_id} no encontrado")
+    if ext_row["status"] != "done":
+        raise HTTPException(400, f"Job de extracción no está completado (status={ext_row['status']})")
+    if tdr_row["status"] != "done":
+        raise HTTPException(400, f"Job TDR no está completado (status={tdr_row['status']})")
+
+    ext_result = ext_row["result"]
+    tdr_result = tdr_row["result"]
+    if isinstance(ext_result, str):
+        ext_result = json.loads(ext_result)
+    if isinstance(tdr_result, str):
+        tdr_result = json.loads(tdr_result)
+
+    # Construir objetos Professional y Experience
+    from src.extraction.models import Professional, Experience
+    from src.extraction.llm_extractor import _parsear_fecha
+
+    profesionales = []
+    experiencias = []
+
+    for sec in ext_result.get("secciones", []):
+        prof_data = sec.get("profesional") or {}
+        nombre = prof_data.get("nombre") or f"(sin nombre - {sec['cargo']})"
+
+        prof = Professional(
+            name=nombre,
+            role=sec.get("cargo", ""),
+            role_number=sec.get("numero") or "",
+            profession=prof_data.get("profesion"),
+            tipo_colegio=prof_data.get("tipo_colegio"),
+            registro_colegio=prof_data.get("registro_colegio"),
+            registration_date=None,
+            folio=None,
+            source_file="db",
+        )
+        profesionales.append(prof)
+
+        for exp_data in sec.get("experiencias", []):
+            start = _parsear_fecha(exp_data.get("fecha_inicio"))
+            end = _parsear_fecha(exp_data.get("fecha_fin"))
+            cert = _parsear_fecha(exp_data.get("fecha_emision"))
+
+            exp = Experience(
+                professional_name=nombre,
+                dni=prof_data.get("dni"),
+                project_name=exp_data.get("proyecto"),
+                role=exp_data.get("cargo"),
+                company=exp_data.get("empresa_emisora"),
+                ruc=exp_data.get("ruc"),
+                start_date=start,
+                end_date=end,
+                cert_issue_date=cert,
+                folio=exp_data.get("folio"),
+                cui=None,
+                infoobras_code=None,
+                signer=exp_data.get("firmante"),
+                raw_text="",
+                source_file="db",
+                tipo_obra=exp_data.get("tipo_obra"),
+                tipo_intervencion=exp_data.get("tipo_intervencion"),
+                tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+            )
+            experiencias.append(exp)
+
+    # Ejecutar Paso 4
+    from src.validation.evaluator import evaluar_propuesta
+    rtm_personal = tdr_result.get("rtm_personal", [])
+
+    resultados = evaluar_propuesta(
+        profesionales=profesionales,
+        experiencias=experiencias,
+        requisitos_rtm=rtm_personal,
+        proposal_date=_date.today(),
+    )
+
+    # Generar Excel
+    from src.reporting.excel_writer import write_report
+
+    excel_dir = OUTPUT_DIR / extraction_job_id
+    excel_dir.mkdir(parents=True, exist_ok=True)
+    excel_path = excel_dir / f"evaluacion_{extraction_job_id}.xlsx"
+
+    write_report(
+        resultados=resultados,
+        output_path=excel_path,
+        proposal_date=_date.today(),
+        filename=ext_row.get("filename", ""),
+    )
+
+    # Resumen
+    total_ev = sum(len(r.evaluaciones) for r in resultados)
+    total_alertas = sum(len(ev.alertas) for r in resultados for ev in r.evaluaciones)
+    con_rtm = sum(1 for r in resultados if r.requisito_encontrado)
+
+    return {
+        "ok": True,
+        "profesionales": len(resultados),
+        "con_rtm": con_rtm,
+        "evaluaciones": total_ev,
+        "alertas": total_alertas,
+        "excel_path": str(excel_path),
+        "download_url": f"/api/jobs/{extraction_job_id}/excel",
+    }
+
+
+@app.get("/api/jobs/{job_id}/excel", tags=["Evaluation"])
+async def download_excel(job_id: str):
+    """Descarga el Excel de evaluación RTM de un job."""
+    from fastapi.responses import FileResponse
+
+    excel_path = OUTPUT_DIR / job_id / f"evaluacion_{job_id}.xlsx"
+    if not excel_path.exists():
+        raise HTTPException(404, "Excel no encontrado. Ejecute la evaluación primero.")
+
+    return FileResponse(
+        path=str(excel_path),
+        filename=f"evaluacion_{job_id}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @app.delete("/api/jobs/{job_id}", tags=["Jobs"])
 async def delete_job(job_id: str):
     with _get_conn() as conn:
