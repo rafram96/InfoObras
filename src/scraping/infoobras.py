@@ -472,20 +472,25 @@ class ObraCandidata:
     motivos: list[str] = field(default_factory=list)
 
 
-def _extraer_palabras_clave(nombre_proyecto: str) -> str:
+def _extraer_palabras_clave(nombre_proyecto: str) -> list[str]:
     """
-    Extrae palabras clave de un nombre de proyecto para búsqueda.
+    Extrae múltiples variantes de búsqueda para un proyecto.
+
+    Retorna lista de queries ordenadas de más específica a más genérica.
+    La API de InfoObras busca por substring en el nombre de la obra,
+    así que hay que enviar frases que estén contenidas en el nombre real.
 
     "MEJORAMIENTO Y AMPLIACIÓN DE LOS SERVICIOS DE SALUD DEL HOSPITAL
      DE APOYO DE POMABAMBA ANTONIO CALDAS DOMÍNGUEZ..."
-    → "HOSPITAL POMABAMBA" (palabras más específicas)
+    → ["HOSPITAL APOYO POMABAMBA", "POMABAMBA", "HOSPITAL POMABAMBA"]
     """
     import unicodedata
     t = unicodedata.normalize("NFD", nombre_proyecto.upper())
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"[^A-Z0-9\s]", " ", t)
 
-    # Quitar palabras genéricas que no ayudan en la búsqueda
-    stopwords = {
+    # Palabras muy genéricas que aparecen en casi todas las obras
+    stopwords_busqueda = {
         "MEJORAMIENTO", "AMPLIACION", "CONSTRUCCION", "CREACION",
         "REHABILITACION", "REMODELACION", "INSTALACION", "RECUPERACION",
         "DE", "DEL", "LA", "LAS", "LOS", "EL", "EN", "AL", "CON",
@@ -493,14 +498,48 @@ def _extraer_palabras_clave(nombre_proyecto: str) -> str:
         "SERVICIOS", "SALUD", "OBRA", "PROYECTO", "EJECUCION",
         "SUPERVISION", "CONSULTORIA", "SERVICIO",
         "CAPACIDAD", "RESOLUTIVA", "PRESTACION", "ACCESO",
-        "DISTRITO", "PROVINCIA", "DEPARTAMENTO", "REGION",
     }
 
-    tokens = re.sub(r"[^A-Z0-9\s]", "", t).split()
-    keywords = [w for w in tokens if w not in stopwords and len(w) > 2]
+    # Palabras que indican lugar/tipo (útiles para búsqueda)
+    marcadores_tipo = {
+        "HOSPITAL", "CENTRO", "ESTABLECIMIENTO", "POSTA", "CLINICA",
+        "COLEGIO", "ESCUELA", "UNIVERSIDAD", "CARRETERA", "PUENTE",
+        "ESTADIO", "COLISEO", "PALACIO", "MUNICIPALIDAD",
+    }
 
-    # Tomar las primeras 3-4 palabras clave más específicas
-    return " ".join(keywords[:4])
+    tokens = t.split()
+    # Separar: marcadores de tipo vs topónimos/nombres propios
+    keywords = [w for w in tokens if w not in stopwords_busqueda and len(w) > 2]
+
+    queries: list[str] = []
+
+    # Query 1: Tipo + topónimo(s) — lo más específico
+    # Ej: "HOSPITAL POMABAMBA" o "HOSPITAL APOYO POMABAMBA"
+    tipos = [w for w in keywords if w in marcadores_tipo]
+    toponimos = [w for w in keywords if w not in marcadores_tipo and w not in {"APOYO", "NIVEL", "ATENCION", "SEGUNDO", "REGIONAL"}]
+
+    if tipos and toponimos:
+        # Tipo + primeros 2 topónimos
+        q = " ".join(tipos[:1] + toponimos[:2])
+        queries.append(q)
+
+    # Query 2: Solo topónimos (nombre propio del lugar)
+    if toponimos:
+        queries.append(" ".join(toponimos[:3]))
+
+    # Query 3: Todas las keywords (más amplio)
+    if keywords:
+        q_full = " ".join(keywords[:5])
+        if q_full not in queries:
+            queries.append(q_full)
+
+    # Query 4: Tipo + primer topónimo (mínimo)
+    if tipos and toponimos and len(toponimos) > 0:
+        q_min = f"{tipos[0]} {toponimos[0]}"
+        if q_min not in queries:
+            queries.append(q_min)
+
+    return queries
 
 
 def _score_candidata(
@@ -601,29 +640,28 @@ def buscar_obra_por_certificado(
         logger.warning("InfoObras: nombre de proyecto muy corto para buscar: '%s'", project_name)
         return None
 
-    # 1. Extraer palabras clave
-    keywords = _extraer_palabras_clave(project_name)
-    if not keywords:
+    # 1. Extraer variantes de búsqueda (de más específica a más genérica)
+    queries = _extraer_palabras_clave(project_name)
+    if not queries:
         logger.warning("InfoObras: no se extrajeron palabras clave de '%s'", project_name[:60])
         return None
 
-    logger.info("InfoObras: buscando por keywords '%s' (de '%s')", keywords, project_name[:60])
-
-    # 2. Buscar en InfoObras
-    resultados = buscar_obras_por_nombre(keywords)
+    # 2. Buscar con cada query hasta encontrar resultados
+    resultados: list[dict] = []
+    query_usada = ""
+    for q in queries:
+        logger.info("InfoObras: buscando '%s' (de '%s')", q, project_name[:60])
+        resultados = buscar_obras_por_nombre(q)
+        if resultados:
+            query_usada = q
+            break
+        time.sleep(1.0)  # rate limiting entre reintentos
 
     if not resultados:
-        # Reintentar con menos palabras
-        keywords_corto = " ".join(keywords.split()[:2])
-        if keywords_corto != keywords:
-            logger.info("InfoObras: reintentando con '%s'", keywords_corto)
-            resultados = buscar_obras_por_nombre(keywords_corto)
-
-    if not resultados:
-        logger.info("InfoObras: sin resultados para '%s'", project_name[:60])
+        logger.info("InfoObras: sin resultados para '%s' (probé %d queries)", project_name[:60], len(queries))
         return None
 
-    logger.info("InfoObras: %d resultados encontrados", len(resultados))
+    logger.info("InfoObras: %d resultados con query '%s'", len(resultados), query_usada)
 
     # 3. Rankear candidatos
     candidatos = [
