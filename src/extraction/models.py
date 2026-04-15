@@ -199,8 +199,9 @@ class EvaluacionRTM:
     acredita_complejidad: str = ""                   # "SI" / "NO"
     dentro_20_anos: str = ""                         # "SI" / "NO"
 
-    # Metadata interna (no se exporta a Excel)
+    # Metadata interna (no se exporta a Excel directamente)
     alertas: list = field(default_factory=list)       # list[Alert]
+    experiencia_ref: Optional[Experience] = None      # referencia a la Experience original
 
 
 @dataclass

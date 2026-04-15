@@ -220,7 +220,11 @@ ESTRUCTURA DEL DOCUMENTO:
 - Sección B.2 (o "EXPERIENCIA DEL PERSONAL CLAVE"): tabla con Cargo | Formación | Experiencia | Tiempo
   → Da los MESES exactos ("48 meses", "36 meses", "24 meses") y los cargos similares válidos.
 - Nota (*): define especialidad y subespecialidades válidas para la experiencia.
-  → Copia su contenido en "tipo_obra_valido".
+  → Extrae el TIPO DE OBRA o SECTOR (ej: "salud", "educación", "edificación", "vial", "saneamiento").
+  → Si la nota dice "en entidades públicas y/o privadas", eso NO es un tipo de obra — usa null.
+  → Si la nota lista tipos de intervención ("construcción y/o mejoramiento..."), extrae solo el SECTOR.
+  → Ejemplos correctos: "establecimientos de salud", "edificación educativa", "obras viales".
+  → Ejemplos INCORRECTOS (NO usar): "en entidades públicas y/o privadas", "obras en general".
 
 REGLA: combina B.1 y B.2 por cargo. Si un campo no está en el texto, usa null. NO inventes.
 
@@ -260,7 +264,7 @@ TEXTO:
         "puntaje_por_experiencia": número o null,
         "puntaje_maximo": número o null
       }},
-      "tipo_obra_valido": "contenido de la nota (*) con especialidad y subespecialidades, o null",
+      "tipo_obra_valido": "sector o tipo de obra válido (ej: 'establecimientos de salud', 'edificación educativa', 'obras viales'). null si la nota solo dice 'en entidades públicas y/o privadas' o 'obras en general'",
       "tiempo_adicional_factores": null,
       "capacitacion": {{
         "tema": "tema(s) de la capacitación tal como aparecen en el texto",

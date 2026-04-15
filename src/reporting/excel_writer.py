@@ -13,7 +13,7 @@ from openpyxl.utils import get_column_letter
 from src.extraction.models import (
     Professional, Experience, EvaluacionRTM, ResultadoProfesional,
 )
-from src.validation.rules import Alert, Severity
+from src.validation.rules import Alert, Severity, calculate_effective_days, calculate_effective_years
 
 # ── Estilos ──────────────────────────────────────────────────────────────────
 GREEN = PatternFill("solid", fgColor="C6EFCE")
@@ -118,7 +118,7 @@ def _write_resumen(
     ws["B11"].fill = RED if alertas_criticas > 0 else GREEN
 
     # Tabla resumen por profesional
-    headers = ["#", "Cargo", "Nombre", "RTM Match", "Experiencias", "Alertas", "Críticas"]
+    headers = ["#", "Cargo", "Nombre", "RTM Match", "Experiencias", "Años Efectivos", "Alertas", "Críticas"]
     _apply_header(ws, headers, row=13)
 
     for i, res in enumerate(resultados, 1):
@@ -128,6 +128,14 @@ def _write_resumen(
             1 for ev in res.evaluaciones for a in ev.alertas
             if a.severity == Severity.CRITICAL
         )
+
+        # Calcular años efectivos del profesional
+        exps_con_fecha = [
+            ev.experiencia_ref for ev in res.evaluaciones
+            if ev.experiencia_ref and ev.experiencia_ref.start_date and ev.experiencia_ref.end_date
+        ]
+        anos = calculate_effective_years(exps_con_fecha, proposal_date) if exps_con_fecha and proposal_date else 0.0
+
         ws.cell(row=row, column=1, value=i).font = BODY_FONT
         ws.cell(row=row, column=2, value=res.profesional.role).font = BODY_FONT
         ws.cell(row=row, column=3, value=res.profesional.name).font = BODY_FONT
@@ -137,9 +145,11 @@ def _write_resumen(
         rtm_cell.font = BODY_FONT
 
         ws.cell(row=row, column=5, value=len(res.evaluaciones)).font = BODY_FONT
-        ws.cell(row=row, column=6, value=n_alertas).font = BODY_FONT
+        ws.cell(row=row, column=6, value=anos).font = BODY_FONT
 
-        crit_cell = ws.cell(row=row, column=7, value=n_criticas)
+        ws.cell(row=row, column=7, value=n_alertas).font = BODY_FONT
+
+        crit_cell = ws.cell(row=row, column=8, value=n_criticas)
         crit_cell.font = BODY_FONT
         if n_criticas > 0:
             crit_cell.fill = RED
@@ -149,12 +159,33 @@ def _write_resumen(
 
 # ── Hoja 2: Base de Datos (27 columnas del Paso 3) ──────────────────────────
 
+def _covid_check(start: Optional[date], end: Optional[date]) -> str:
+    """Retorna 'INCLUYE PERIODO COVID' si el periodo solapa con COVID."""
+    from src.validation.rules import COVID_START, COVID_END
+    if start and end and start <= COVID_END and end >= COVID_START:
+        return "INCLUYE PERIODO COVID"
+    return ""
+
+
+def _calc_duracion(start: Optional[date], end: Optional[date]) -> str:
+    """Calcula duración en meses entre dos fechas."""
+    if not start or not end:
+        return ""
+    dias = (end - start).days
+    if dias <= 0:
+        return ""
+    meses = dias / 30.44  # promedio de días por mes
+    if meses < 1:
+        return f"{dias} días"
+    return f"{meses:.0f} meses"
+
+
 def _write_base_datos(
     wb: openpyxl.Workbook,
     resultados: list[ResultadoProfesional],
     proposal_date: Optional[date] = None,
 ) -> None:
-    """Hoja Base de Datos — 27 columnas por experiencia."""
+    """Hoja Base de Datos — 27 columnas por experiencia con datos completos."""
     ws = wb.create_sheet("Base de Datos")
 
     headers = [
@@ -192,39 +223,95 @@ def _write_base_datos(
     for res in resultados:
         prof = res.profesional
         for ev in res.evaluaciones:
-            # Buscar la Experience correspondiente (por nombre + proyecto)
-            # Las evaluaciones no guardan la Experience directamente,
-            # así que usamos los datos del EvaluacionRTM
+            exp = ev.experiencia_ref  # Experience original
+
+            # Col 1-2: Profesional
             ws.cell(row=row, column=1, value=prof.name).font = BODY_FONT
-            ws.cell(row=row, column=2, value=prof.registro_colegio or prof.name).font = BODY_FONT
+            ws.cell(row=row, column=2, value=prof.registro_colegio or (exp.dni if exp else "")).font = BODY_FONT
+
+            # Col 3-4: Proyecto y cargo
             ws.cell(row=row, column=3, value=ev.proyecto_propuesto).font = BODY_FONT
             ws.cell(row=row, column=4, value=ev.cargo_experiencia).font = BODY_FONT
-            # Columnas 5-6: empresa y RUC — no están en EvaluacionRTM
-            # (vendrían de Experience, que no se guarda en el dataclass)
-            ws.cell(row=row, column=5, value="").font = BODY_FONT
-            ws.cell(row=row, column=6, value="").font = BODY_FONT
-            ws.cell(row=row, column=7, value=ev.tipo_obra_certificado).font = BODY_FONT
-            ws.cell(row=row, column=8, value="").font = BODY_FONT
-            ws.cell(row=row, column=9, value=_fmt_date(ev.fecha_termino)).font = BODY_FONT  # placeholder
-            ws.cell(row=row, column=10, value=_fmt_date(ev.fecha_termino)).font = BODY_FONT
-            # COVID check
-            ws.cell(row=row, column=11, value="").font = BODY_FONT
+
+            # Col 5-6: Empresa y RUC (de Experience)
+            ws.cell(row=row, column=5, value=exp.company if exp else "").font = BODY_FONT
+            ws.cell(row=row, column=6, value=exp.ruc if exp else "").font = BODY_FONT
+
+            # Col 7-8: Tipo obra y acreditación
+            ws.cell(row=row, column=7, value=ev.tipo_obra_certificado or (exp.tipo_obra if exp else "")).font = BODY_FONT
+            ws.cell(row=row, column=8, value=exp.tipo_acreditacion if exp else "").font = BODY_FONT
+
+            # Col 9-10: Fechas (de Experience)
+            start = exp.start_date if exp else None
+            end = exp.end_date if exp else ev.fecha_termino
+            ws.cell(row=row, column=9, value=_fmt_date(start)).font = BODY_FONT
+            ws.cell(row=row, column=10, value=_fmt_date(end)).font = BODY_FONT
+
+            # Col 11: COVID check
+            covid_txt = _covid_check(start, end)
+            covid_cell = ws.cell(row=row, column=11, value=covid_txt)
+            covid_cell.font = BODY_FONT
+            if covid_txt:
+                covid_cell.fill = YELLOW
+
+            # Col 12-13: Reservadas
             ws.cell(row=row, column=12, value="").font = BODY_FONT
             ws.cell(row=row, column=13, value="").font = BODY_FONT
-            ws.cell(row=row, column=14, value="").font = BODY_FONT
-            ws.cell(row=row, column=15, value="").font = BODY_FONT
-            # Alerta emisión
-            ws.cell(row=row, column=16, value="").font = BODY_FONT
+
+            # Col 14: Duración
+            ws.cell(row=row, column=14, value=_calc_duracion(start, end)).font = BODY_FONT
+
+            # Col 15: Fecha emisión
+            cert_date = exp.cert_issue_date if exp else None
+            ws.cell(row=row, column=15, value=_fmt_date(cert_date)).font = BODY_FONT
+
+            # Col 16: Alerta emisión (fecha emisión < fecha fin → ALERTA)
+            alerta_emision = ""
+            if cert_date and end and end > cert_date:
+                alerta_emision = "ALERTA"
+            alerta_em_cell = ws.cell(row=row, column=16, value=alerta_emision)
+            alerta_em_cell.font = BODY_FONT
+            if alerta_emision:
+                alerta_em_cell.fill = YELLOW
+
+            # Col 17: Folio
             ws.cell(row=row, column=17, value=ev.folio_certificado).font = BODY_FONT
-            ws.cell(row=row, column=18, value="").font = BODY_FONT
-            ws.cell(row=row, column=19, value="").font = BODY_FONT
+
+            # Col 18-19: Firmante (de Experience)
+            ws.cell(row=row, column=18, value=exp.signer if exp else "").font = BODY_FONT
+            ws.cell(row=row, column=19, value="").font = BODY_FONT  # cargo_firmante no está en Experience
+
+            # Col 20: Alerta firmante (requiere validación manual)
             ws.cell(row=row, column=20, value="").font = BODY_FONT
+
+            # Col 21: Fecha creación emisor (requiere SUNAT)
             ws.cell(row=row, column=21, value="").font = BODY_FONT
+
+            # Col 22: Alerta antigüedad emisor (requiere SUNAT)
             ws.cell(row=row, column=22, value="").font = BODY_FONT
-            ws.cell(row=row, column=23, value="").font = BODY_FONT
-            ws.cell(row=row, column=24, value="").font = BODY_FONT
-            ws.cell(row=row, column=25, value="").font = BODY_FONT
-            ws.cell(row=row, column=26, value="").font = BODY_FONT
+
+            # Col 23: Alerta experiencia antigua (>20 años)
+            alerta_antigua = ""
+            if end and proposal_date:
+                try:
+                    limite = proposal_date.replace(year=proposal_date.year - 20)
+                except ValueError:
+                    limite = proposal_date.replace(year=proposal_date.year - 20, day=28)
+                if end < limite:
+                    alerta_antigua = "ALERTA"
+            alerta_ant_cell = ws.cell(row=row, column=23, value=alerta_antigua)
+            alerta_ant_cell.font = BODY_FONT
+            if alerta_antigua:
+                alerta_ant_cell.fill = YELLOW
+
+            # Col 24: Tipo de documento
+            ws.cell(row=row, column=24, value=exp.tipo_acreditacion if exp else "").font = BODY_FONT
+
+            # Col 25-26: CUI e InfoObras
+            ws.cell(row=row, column=25, value=exp.cui if exp else "").font = BODY_FONT
+            ws.cell(row=row, column=26, value=exp.infoobras_code if exp else "").font = BODY_FONT
+
+            # Col 27: Validación cruzada emisor (= col 21, requiere SUNAT)
             ws.cell(row=row, column=27, value="").font = BODY_FONT
 
             # Borders

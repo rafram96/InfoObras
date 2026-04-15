@@ -30,7 +30,7 @@ from typing import Optional
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
@@ -573,10 +573,289 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
         pdf_path.unlink(missing_ok=True)
 
 
+# ── Full Pipeline Job runner ───────────────────────────────────────────────
+def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional[list]) -> None:
+    """
+    Pipeline completo: propuesta + bases → OCR → Pasos 1-4 → Excel.
+
+    Fases:
+    1. OCR + extracción de profesionales (propuesta) — Pasos 2-3
+    2. Extracción TDR (bases) — Paso 1
+    3. Evaluación RTM — Paso 4
+    4. Generación de Excel
+    """
+    from datetime import date as _date
+    from src.extraction.llm_extractor import _parsear_fecha
+
+    def _try_iso(iso_str, raw_str):
+        if iso_str and isinstance(iso_str, str):
+            try:
+                return _date.fromisoformat(iso_str)
+            except ValueError:
+                pass
+        return _parsear_fecha(raw_str)
+
+    _check_cancelled(job_id)
+    _update_job(
+        job_id, status="running", progress_pct=1,
+        progress_stage="Iniciando pipeline completo",
+        started_at=datetime.now(timezone.utc),
+    )
+    _append_job_log(job_id, "Job iniciado — pipeline completo (propuesta + bases)")
+
+    try:
+        # ════════════════════════════════════════════════════════════════
+        # FASE 1: OCR + Extracción de profesionales (propuesta)
+        # ════════════════════════════════════════════════════════════════
+        _append_job_log(job_id, "FASE 1: OCR + Extracción de propuesta")
+        _update_job(job_id, progress_pct=2, progress_stage="OCR propuesta")
+
+        # Reusar _run_job internamente pero capturar el resultado
+        job_output_dir = str(OUTPUT_DIR / job_id)
+
+        # Motor-OCR subprocess
+        args = {
+            "mode": "segmentation",
+            "pdf_path": str(pdf_path),
+            "pages": pages,
+            "output_dir": job_output_dir,
+            "keep_images": False,
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump(args, f)
+            args_file = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            results_file = f.name
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        process = subprocess.Popen(
+            [MOTOR_OCR_PYTHON, MOTOR_OCR_WRAPPER, args_file, results_file],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if line:
+                try:
+                    _parse_progress(job_id, line)
+                except Exception:
+                    pass
+        process.wait(timeout=9000)
+
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, MOTOR_OCR_WRAPPER)
+
+        with open(results_file, encoding="utf-8") as f:
+            raw = json.load(f)
+
+        doc = raw["doc"]
+        extraction_result = {
+            "total_pages": doc["total_pages"],
+            "pages_paddle": doc["pages_paddle"],
+            "pages_qwen": doc["pages_qwen"],
+            "pages_error": doc["pages_error"],
+            "conf_promedio": round(doc["conf_promedio_documento"], 3),
+            "tiempo_total": round(doc["tiempo_total"], 1),
+            "secciones": [
+                {
+                    "index": s["section_index"],
+                    "cargo": s["cargo"],
+                    "cargo_raw": s.get("cargo_raw", s["cargo"]),
+                    "numero": s["numero"],
+                    "total_pages": s["total_pages"],
+                    "page_numbers": s.get("page_numbers", []),
+                    "bloques": s.get("bloques_origen", []),
+                    "es_tipo_b": s.get("es_tipo_b", False),
+                }
+                for s in raw["secciones"]
+            ],
+        }
+
+        Path(args_file).unlink(missing_ok=True)
+        Path(results_file).unlink(missing_ok=True)
+
+        _append_job_log(job_id, f"OCR completado — {doc['total_pages']} págs, {len(raw['secciones'])} profesionales")
+
+        # Extracción LLM (Pasos 2-3)
+        if _EXTRACTION_AVAILABLE:
+            _update_job(job_id, progress_pct=40, progress_stage="Extrayendo profesionales (LLM)")
+            _append_job_log(job_id, "Extracción LLM — Pasos 2-3")
+
+            all_md = list(Path(job_output_dir).rglob("*.md"))
+            prof_files = [f for f in all_md if "_profesionales_" in f.name.lower() and "_metricas_" not in f.name.lower() and "_segmentacion_" not in f.name.lower() and "_texto_" not in f.name.lower()]
+            texto_files = [f for f in all_md if "_texto_" in f.name.lower()]
+
+            if prof_files and texto_files:
+                blocks = parse_professional_blocks(prof_files[0], texto_files[0])
+                total_blocks = len(blocks)
+                _append_job_log(job_id, f"Extrayendo {total_blocks} profesionales")
+
+                for i, block in enumerate(blocks):
+                    pct = 40 + int((i / max(total_blocks, 1)) * 20)
+                    _update_job(job_id, progress_pct=pct, progress_stage=f"Profesional {i+1}/{total_blocks}")
+
+                    try:
+                        extraction = extract_block(block)
+                    except Exception as exc:
+                        logger.warning("Job %s: extracción falló bloque %d: %s", job_id, block.index, exc)
+                        extraction = {"profesional": {"_cargo": block.cargo, "_needs_review": True}, "experiencias": [], "_needs_review": True}
+
+                    for seccion in extraction_result["secciones"]:
+                        if seccion["index"] == block.index:
+                            seccion["profesional"] = extraction.get("profesional")
+                            seccion["experiencias"] = extraction.get("experiencias", [])
+                            seccion["_needs_review"] = extraction.get("_needs_review", False)
+                            break
+
+        _check_cancelled(job_id)
+
+        # ════════════════════════════════════════════════════════════════
+        # FASE 2: Extracción TDR (bases)
+        # ════════════════════════════════════════════════════════════════
+        _update_job(job_id, progress_pct=65, progress_stage="Extrayendo requisitos TDR")
+        _append_job_log(job_id, "FASE 2: Extracción TDR de bases")
+
+        import pdfplumber
+        full_text = ""
+        num_pages = 0
+        with pdfplumber.open(str(bases_path)) as pdf:
+            num_pages = len(pdf.pages)
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                full_text += f"\n--- Página {page.page_number} ---\n{text}"
+
+        chars_per_page = len(full_text.strip()) / max(num_pages, 1)
+        _append_job_log(job_id, f"Bases: {num_pages} págs, {int(chars_per_page)} chars/pág")
+
+        if chars_per_page < 50:
+            _append_job_log(job_id, "Bases escaneadas — invocando motor-OCR")
+            try:
+                from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
+                full_text = invoke_motor_ocr(str(bases_path), output_dir=str(OUTPUT_DIR))
+            except Exception as ocr_err:
+                _append_job_log(job_id, f"ERROR motor-OCR bases: {ocr_err}")
+                raise RuntimeError(f"Bases escaneadas y motor-OCR falló: {ocr_err}") from ocr_err
+
+        _update_job(job_id, progress_pct=75, progress_stage="Analizando requisitos RTM")
+        tdr_result = extraer_bases(full_text, nombre_archivo=bases_path.name, pdf_path=str(bases_path))
+        rtm_personal = tdr_result.get("rtm_personal", [])
+        _append_job_log(job_id, f"TDR completado — {len(rtm_personal)} cargos, {len(tdr_result.get('factores_evaluacion', []))} factores")
+
+        _check_cancelled(job_id)
+
+        # ════════════════════════════════════════════════════════════════
+        # FASE 3: Evaluación RTM (Paso 4)
+        # ════════════════════════════════════════════════════════════════
+        _update_job(job_id, progress_pct=85, progress_stage="Evaluación RTM")
+        _append_job_log(job_id, "FASE 3: Evaluación RTM — Paso 4")
+
+        from src.extraction.models import Professional, Experience
+        from src.validation.evaluator import evaluar_propuesta
+
+        profesionales = []
+        experiencias = []
+
+        for sec in extraction_result.get("secciones", []):
+            prof_data = sec.get("profesional") or {}
+            nombre = prof_data.get("nombre") or f"(sin nombre - {sec['cargo']})"
+
+            prof = Professional(
+                name=nombre, role=sec.get("cargo", ""), role_number=sec.get("numero") or "",
+                profession=prof_data.get("profesion"), tipo_colegio=prof_data.get("tipo_colegio"),
+                registro_colegio=prof_data.get("registro_colegio"), registration_date=None,
+                folio=None, source_file="pipeline",
+            )
+            profesionales.append(prof)
+
+            for exp_data in sec.get("experiencias", []):
+                exp = Experience(
+                    professional_name=nombre, dni=prof_data.get("dni"),
+                    project_name=exp_data.get("proyecto"), role=exp_data.get("cargo"),
+                    company=exp_data.get("empresa_emisora"), ruc=exp_data.get("ruc"),
+                    start_date=_try_iso(exp_data.get("fecha_inicio_parsed"), exp_data.get("fecha_inicio")),
+                    end_date=_try_iso(exp_data.get("fecha_fin_parsed"), exp_data.get("fecha_fin")),
+                    cert_issue_date=_try_iso(exp_data.get("fecha_emision_parsed"), exp_data.get("fecha_emision")),
+                    folio=exp_data.get("folio"), cui=None, infoobras_code=None,
+                    signer=exp_data.get("firmante"), raw_text="", source_file="pipeline",
+                    tipo_obra=exp_data.get("tipo_obra"), tipo_intervencion=exp_data.get("tipo_intervencion"),
+                    tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                )
+                experiencias.append(exp)
+
+        resultados_eval = evaluar_propuesta(
+            profesionales=profesionales, experiencias=experiencias,
+            requisitos_rtm=rtm_personal, proposal_date=_date.today(),
+        )
+
+        total_alertas = sum(len(ev.alertas) for r in resultados_eval for ev in r.evaluaciones)
+        con_rtm = sum(1 for r in resultados_eval if r.requisito_encontrado)
+        _append_job_log(job_id, f"Evaluación: {len(profesionales)} prof, {con_rtm} con RTM, {total_alertas} alertas")
+
+        # ════════════════════════════════════════════════════════════════
+        # FASE 4: Generar Excel
+        # ════════════════════════════════════════════════════════════════
+        _update_job(job_id, progress_pct=95, progress_stage="Generando Excel")
+        _append_job_log(job_id, "FASE 4: Generando Excel")
+
+        from src.reporting.excel_writer import write_report
+
+        excel_dir = OUTPUT_DIR / job_id
+        excel_dir.mkdir(parents=True, exist_ok=True)
+        excel_path = excel_dir / f"evaluacion_{job_id}.xlsx"
+
+        write_report(
+            resultados=resultados_eval, output_path=excel_path,
+            proposal_date=_date.today(), filename=pdf_path.name,
+        )
+        _append_job_log(job_id, f"Excel generado: {excel_path.name}")
+
+        # Resultado final combinado
+        result = {
+            "job_type": "full",
+            **extraction_result,
+            "tdr": {
+                "rtm_personal": rtm_personal,
+                "factores_evaluacion": tdr_result.get("factores_evaluacion", []),
+                "total_cargos": len(rtm_personal),
+            },
+            "evaluacion": {
+                "profesionales": len(resultados_eval),
+                "con_rtm": con_rtm,
+                "total_evaluaciones": sum(len(r.evaluaciones) for r in resultados_eval),
+                "total_alertas": total_alertas,
+            },
+            "excel_path": str(excel_path),
+        }
+
+        _update_job(
+            job_id, status="done", progress_pct=100,
+            progress_stage="Completado",
+            result=json.dumps(result, ensure_ascii=False, default=str),
+        )
+        _append_job_log(job_id, "Pipeline completo finalizado")
+
+    except subprocess.CalledProcessError as e:
+        _append_job_log(job_id, f"ERROR: motor-OCR código {e.returncode}")
+        _update_job(job_id, status="error", progress_pct=0, progress_stage=None, error=f"motor-OCR error (código {e.returncode})")
+    except Exception as e:
+        logger.exception("Job %s (full): error", job_id)
+        _append_job_log(job_id, f"ERROR: {e}")
+        _update_job(job_id, status="error", progress_pct=0, progress_stage=None, error=str(e))
+    finally:
+        pdf_path.unlink(missing_ok=True)
+        if bases_path:
+            bases_path.unlink(missing_ok=True)
+
+
 # ── Routes: Jobs (OCR + pipeline) ───────────────────────────────────────────
 @app.post("/api/jobs", status_code=201, tags=["Jobs"])
 async def create_job(
     file: UploadFile = File(...),
+    bases_file: Optional[UploadFile] = File(None),
     job_type: str = Form("extraction"),
     pages_from: Optional[int] = Form(None),
     pages_to: Optional[int] = Form(None),
@@ -589,6 +868,12 @@ async def create_job(
 
     if job_type == "tdr" and not _TDR_AVAILABLE:
         raise HTTPException(503, "Módulos TDR no disponibles en el servidor")
+
+    if job_type == "full" and not bases_file:
+        raise HTTPException(400, "job_type 'full' requiere bases_file (PDF de bases)")
+
+    if job_type == "full" and not _TDR_AVAILABLE:
+        raise HTTPException(503, "Módulos TDR no disponibles — requeridos para pipeline completo")
 
     if pages_from is not None and pages_to is not None:
         if pages_from < 1 or pages_to < pages_from:
@@ -603,6 +888,11 @@ async def create_job(
     pdf_path = UPLOADS_DIR / f"{job_id}_{file.filename}"
     pdf_path.write_bytes(await file.read())
 
+    bases_path = None
+    if bases_file:
+        bases_path = UPLOADS_DIR / f"{job_id}_bases_{bases_file.filename}"
+        bases_path.write_bytes(await bases_file.read())
+
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -614,6 +904,8 @@ async def create_job(
     # Bifurcar según tipo de job
     if job_type == "tdr":
         _executor.submit(_run_tdr_job, job_id, pdf_path)
+    elif job_type == "full":
+        _executor.submit(_run_full_job, job_id, pdf_path, bases_path, pages)
     else:
         _executor.submit(_run_job, job_id, pdf_path, pages)
 
@@ -737,6 +1029,15 @@ async def evaluate_job(
     from src.extraction.models import Professional, Experience
     from src.extraction.llm_extractor import _parsear_fecha
 
+    def _try_iso_or_parse(iso_str, raw_str):
+        """Intenta ISO primero, luego parseo del string crudo."""
+        if iso_str and isinstance(iso_str, str):
+            try:
+                return _date.fromisoformat(iso_str)
+            except ValueError:
+                pass
+        return _parsear_fecha(raw_str)
+
     profesionales = []
     experiencias = []
 
@@ -758,9 +1059,10 @@ async def evaluate_job(
         profesionales.append(prof)
 
         for exp_data in sec.get("experiencias", []):
-            start = _parsear_fecha(exp_data.get("fecha_inicio"))
-            end = _parsear_fecha(exp_data.get("fecha_fin"))
-            cert = _parsear_fecha(exp_data.get("fecha_emision"))
+            # Usar fechas pre-parseadas (ISO) si existen, sino parsear el string crudo
+            start = _try_iso_or_parse(exp_data.get("fecha_inicio_parsed"), exp_data.get("fecha_inicio"))
+            end = _try_iso_or_parse(exp_data.get("fecha_fin_parsed"), exp_data.get("fecha_fin"))
+            cert = _try_iso_or_parse(exp_data.get("fecha_emision_parsed"), exp_data.get("fecha_emision"))
 
             exp = Experience(
                 professional_name=nombre,
@@ -841,6 +1143,110 @@ async def download_excel(job_id: str):
     )
 
 
+# ── InfoObras: búsqueda y confirmación de CUIs ──────────────────────────────
+
+@app.post("/api/infoobras/search", tags=["InfoObras"])
+async def search_infoobras(
+    project_name: str = Form(...),
+    cert_date: Optional[str] = Form(None),
+    entidad: Optional[str] = Form(None),
+):
+    """
+    Busca una obra en InfoObras por nombre del proyecto.
+    Retorna candidatos con score para confirmación manual.
+    """
+    from src.scraping.infoobras import (
+        buscar_obras_por_nombre, _extraer_palabras_clave,
+        _score_candidata, _parse_timestamp_json,
+    )
+    from datetime import date as _date
+
+    cert_d = None
+    if cert_date:
+        try:
+            cert_d = _date.fromisoformat(cert_date)
+        except ValueError:
+            pass
+
+    queries = _extraer_palabras_clave(project_name)
+    resultados = []
+    for q in queries:
+        resultados = buscar_obras_por_nombre(q)
+        if resultados:
+            break
+
+    if not resultados:
+        return {"candidates": [], "query": queries[0] if queries else ""}
+
+    candidatos = [
+        _score_candidata(obra, project_name, cert_d, entidad)
+        for obra in resultados
+    ]
+    candidatos.sort(key=lambda c: c.score, reverse=True)
+
+    return {
+        "candidates": [
+            {
+                "obra_id": c.obra_id,
+                "nombre": c.nombre,
+                "cui": c.cui,
+                "estado": c.estado,
+                "entidad": c.entidad,
+                "fecha_inicio": c.fecha_inicio.isoformat() if c.fecha_inicio else None,
+                "score": round(c.score, 1),
+                "motivos": c.motivos,
+            }
+            for c in candidatos[:10]
+        ],
+    }
+
+
+@app.get("/api/infoobras/obra/{cui}", tags=["InfoObras"])
+async def get_obra_infoobras(cui: str):
+    """Obtiene datos completos de una obra por CUI."""
+    from src.scraping.infoobras import fetch_by_cui
+
+    obra = fetch_by_cui(cui)
+    if not obra:
+        raise HTTPException(404, f"Obra con CUI {cui} no encontrada en InfoObras")
+
+    return {
+        "cui": obra.cui,
+        "obra_id": obra.obra_id,
+        "nombre": obra.nombre,
+        "estado": obra.estado,
+        "tipo_obra": obra.tipo_obra,
+        "entidad": obra.entidad,
+        "ejecutor": obra.ejecutor,
+        "fecha_inicio": obra.fecha_inicio.isoformat() if obra.fecha_inicio else None,
+        "fecha_fin": obra.fecha_fin.isoformat() if obra.fecha_fin else None,
+        "plazo_dias": obra.plazo_dias,
+        "supervisores": [
+            {
+                "nombre": f"{s.nombre} {s.apellido_paterno} {s.apellido_materno or ''}".strip(),
+                "tipo": s.tipo,
+                "fecha_inicio": s.fecha_inicio.isoformat() if s.fecha_inicio else None,
+                "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
+            }
+            for s in obra.supervisores
+        ],
+        "residentes": [
+            {
+                "nombre": f"{r.nombre} {r.apellido_paterno} {r.apellido_materno or ''}".strip(),
+                "fecha_inicio": r.fecha_inicio.isoformat() if r.fecha_inicio else None,
+                "fecha_fin": r.fecha_fin.isoformat() if r.fecha_fin else None,
+            }
+            for r in obra.residentes
+        ],
+        "paralizaciones": len(obra.suspension_periods),
+        "suspension_periods": [
+            {"inicio": p[0].isoformat(), "fin": p[1].isoformat()}
+            for p in obra.suspension_periods
+        ],
+        "total_avances": len(obra.avances),
+    }
+
+
 @app.delete("/api/jobs/{job_id}", tags=["Jobs"])
 async def delete_job(job_id: str):
     with _get_conn() as conn:
@@ -859,6 +1265,67 @@ async def delete_job(job_id: str):
     if job_dir.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
     return {"ok": True}
+
+
+# ── WebSocket para progreso en tiempo real ───────────────────────────────────
+
+@app.websocket("/ws/jobs/{job_id}")
+async def ws_job_progress(websocket: WebSocket, job_id: str):
+    """
+    WebSocket que envía actualizaciones de progreso de un job cada 2 segundos.
+    El cliente se conecta y recibe JSON con status, progress_pct, progress_stage.
+    Se cierra automáticamente cuando el job termina (done/error).
+    """
+    await websocket.accept()
+    import asyncio
+
+    try:
+        last_pct = -1
+        last_status = ""
+        while True:
+            try:
+                with _get_conn() as conn:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                        cur.execute(
+                            "SELECT status, progress_pct, progress_stage, started_at "
+                            "FROM jobs WHERE id = %s",
+                            (job_id,),
+                        )
+                        row = cur.fetchone()
+            except Exception:
+                await websocket.send_json({"error": "DB error"})
+                break
+
+            if not row:
+                await websocket.send_json({"error": "Job not found"})
+                break
+
+            status = row["status"]
+            pct = row["progress_pct"] or 0
+            stage = row["progress_stage"]
+
+            # Solo enviar si cambió algo
+            if pct != last_pct or status != last_status:
+                started = row.get("started_at")
+                await websocket.send_json({
+                    "status": status,
+                    "progress_pct": pct,
+                    "progress_stage": stage,
+                    "started_at": started.isoformat() if started else None,
+                })
+                last_pct = pct
+                last_status = status
+
+            # Cerrar si el job terminó
+            if status in ("done", "error"):
+                break
+
+            await asyncio.sleep(2)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
 
 
 # ── Health checks ────────────────────────────────────────────────────────────
@@ -995,7 +1462,7 @@ def _check_validation() -> dict:
 
 def _check_scraping() -> dict:
     modules_status = {}
-    for name in ["infoobras", "sunat", "cip"]:
+    for name in ["infoobras"]:
         try:
             mod = __import__(f"src.scraping.{name}", fromlist=[name])
             funcs = [a for a in dir(mod) if not a.startswith("_") and callable(getattr(mod, a))]

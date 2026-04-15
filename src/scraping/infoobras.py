@@ -433,6 +433,127 @@ def buscar_obras_por_nombre(nombre: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Verificación de profesional en obra
+# ---------------------------------------------------------------------------
+
+@dataclass
+class VerificacionProfesional:
+    """Resultado de verificar un profesional contra InfoObras."""
+    obra_encontrada: bool = False
+    nombre_coincide: bool = False
+    score_nombre: float = 0.0
+    nombre_encontrado: Optional[str] = None
+    periodo_valido: bool = False
+    paralizaciones_en_periodo: list[dict] = field(default_factory=list)
+    dias_paralizado_en_periodo: int = 0
+    alertas: list[str] = field(default_factory=list)
+
+
+def verificar_profesional_en_obra(
+    obra: WorkInfo,
+    nombre_profesional: str,
+    cargo_tipo: str,
+    fecha_inicio_cert: Optional[date] = None,
+    fecha_fin_cert: Optional[date] = None,
+) -> VerificacionProfesional:
+    """
+    Verifica si un profesional aparece en InfoObras para la obra dada.
+
+    Args:
+        obra: WorkInfo con datos de la obra (supervisores, residentes, avances)
+        nombre_profesional: nombre del profesional según el certificado
+        cargo_tipo: "supervisor" o "residente"
+        fecha_inicio_cert: inicio del periodo según certificado
+        fecha_fin_cert: fin del periodo según certificado
+
+    Returns:
+        VerificacionProfesional con resultado del cruce
+    """
+    result = VerificacionProfesional(obra_encontrada=True)
+
+    # 1. Verificar nombre en histórico del cargo
+    candidatos = obra.supervisores if cargo_tipo in ("supervisor", "inspector") else obra.residentes
+
+    mejor_score = 0.0
+    mejor_nombre = None
+
+    for persona in candidatos:
+        if isinstance(persona, SupervisorInfo):
+            nombre_inf = f"{persona.nombre} {persona.apellido_paterno} {persona.apellido_materno or ''}".strip()
+            p_inicio = persona.fecha_inicio
+            p_fin = persona.fecha_fin
+        else:
+            nombre_inf = f"{persona.nombre} {persona.apellido_paterno} {persona.apellido_materno or ''}".strip()
+            p_inicio = persona.fecha_inicio
+            p_fin = persona.fecha_fin
+
+        score = _jaccard(nombre_profesional, nombre_inf)
+
+        if score > mejor_score:
+            mejor_score = score
+            mejor_nombre = nombre_inf
+
+            # Verificar periodo si el nombre matchea bien
+            if score >= 0.6 and fecha_inicio_cert and fecha_fin_cert and p_inicio:
+                p_fin_eff = p_fin or fecha_fin_cert  # si no tiene fin, asumir vigente
+                if fecha_inicio_cert <= p_fin_eff and (fecha_fin_cert >= p_inicio):
+                    result.periodo_valido = True
+
+    # También verificar en datos de búsqueda (supervisor/residente actual)
+    sup_actual = obra.raw_busqueda.get("nombresSupervisor", "")
+    res_actual = obra.raw_busqueda.get("nombresResidente", "")
+    nombre_api = sup_actual if cargo_tipo in ("supervisor", "inspector") else res_actual
+    if nombre_api:
+        score_api = _jaccard(nombre_profesional, nombre_api)
+        if score_api > mejor_score:
+            mejor_score = score_api
+            mejor_nombre = nombre_api
+
+    result.score_nombre = round(mejor_score, 3)
+    result.nombre_encontrado = mejor_nombre
+    result.nombre_coincide = mejor_score >= 0.6
+
+    if mejor_score < 0.6:
+        result.alertas.append(
+            f"Nombre '{nombre_profesional}' no coincide con ningún {cargo_tipo} "
+            f"en InfoObras (score máx: {mejor_score:.2f})"
+        )
+    elif not result.periodo_valido and fecha_inicio_cert:
+        result.alertas.append(
+            f"'{nombre_profesional}' aparece en InfoObras pero en periodo diferente al del certificado"
+        )
+
+    # 2. Detectar paralizaciones en el periodo del certificado
+    if fecha_inicio_cert and fecha_fin_cert:
+        for av in obra.avances:
+            if "paraliz" not in av.estado.lower() and "suspend" not in av.estado.lower():
+                continue
+            if av.anio and av.mes:
+                try:
+                    ini_mes = date(av.anio, av.mes, 1)
+                    fin_mes = date(av.anio, av.mes + 1, 1) if av.mes < 12 else date(av.anio, 12, 31)
+                    # Verificar solapamiento
+                    if fecha_inicio_cert <= fin_mes and fecha_fin_cert >= ini_mes:
+                        result.paralizaciones_en_periodo.append({
+                            "periodo": f"{av.estado} — {av.mes}/{av.anio}",
+                            "tipo": av.tipo_paralizacion,
+                            "dias": av.dias_paralizado,
+                            "causal": av.causal,
+                        })
+                        result.dias_paralizado_en_periodo += av.dias_paralizado
+                except (ValueError, TypeError):
+                    continue
+
+    if result.paralizaciones_en_periodo:
+        result.alertas.append(
+            f"Obra paralizada {len(result.paralizaciones_en_periodo)} mes(es) "
+            f"durante el periodo del certificado ({result.dias_paralizado_en_periodo} días)"
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Similitud de nombres (Jaccard sobre tokens)
 # ---------------------------------------------------------------------------
 

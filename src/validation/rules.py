@@ -22,12 +22,12 @@ class AlertCode(str, Enum):
     ALT01 = "ALT01"  # Fecha fin > fecha emisión certificado
     ALT02 = "ALT02"  # Periodo COVID
     ALT03 = "ALT03"  # Experiencia > 20 años
-    ALT04 = "ALT04"  # Empresa constituida después del inicio
+    ALT04 = "ALT04"  # Empresa constituida después del inicio (verificación manual SUNAT)
     ALT05 = "ALT05"  # Sin fecha de término ("a la fecha")
     ALT06 = "ALT06"  # Cargo no válido según bases
     ALT07 = "ALT07"  # Profesión no coincide
     ALT08 = "ALT08"  # Tipo de obra no coincide
-    ALT09 = "ALT09"  # CIP no vigente
+    ALT09 = "ALT09"  # Colegiatura no vigente (verificación manual)
 
 
 class Severity(str, Enum):
@@ -129,7 +129,8 @@ def check_alerts(
             ))
 
     # ----- ALT04: Empresa constituida después del inicio de experiencia -----
-    # Requiere dato externo de SUNAT — skip si None
+    # Verificación manual SUNAT (tiene CAPTCHA, no se automatiza).
+    # El evaluador puede pasar sunat_start_date manualmente si lo verificó.
     if (
         sunat_start_date is not None
         and exp.start_date is not None
@@ -211,17 +212,27 @@ def check_alerts(
                 experience=exp,
             ))
 
-    # ----- ALT09: CIP no vigente -----
-    # Requiere dato externo del scraper CIP — skip si None
+    # ----- ALT09: Colegiatura no vigente -----
+    # Verificación manual — el evaluador ingresa el dato desde la UI.
+    # Cada colegio (CIP, CAP, CBP, CMP, etc.) tiene su propio portal.
     if cip_vigente is not None and cip_vigente is False:
         alerts.append(Alert(
             code=AlertCode.ALT09,
             severity=Severity.WARNING,
-            description="CIP/Colegiatura no vigente según consulta al colegio profesional",
+            description="Colegiatura no vigente según verificación del evaluador",
             experience=exp,
         ))
 
     return alerts
+
+
+def _overlap_days(a_start: date, a_end: date, b_start: date, b_end: date) -> int:
+    """Retorna días de solapamiento entre dos periodos (0 si no solapan)."""
+    overlap_start = max(a_start, b_start)
+    overlap_end = min(a_end, b_end)
+    if overlap_start > overlap_end:
+        return 0
+    return (overlap_end - overlap_start).days + 1
 
 
 def calculate_effective_days(
@@ -230,9 +241,84 @@ def calculate_effective_days(
     suspension_periods: Optional[list[tuple[date, date]]] = None,
 ) -> int:
     """
-    Paso 5: suma días efectivos descontando COVID y paralizaciones/suspensiones
-    obtenidas de InfoObras.
+    Paso 5: suma días efectivos de experiencia.
 
-    TODO: implementar en Paso 5.
+    Por cada experiencia con fecha_inicio y fecha_fin:
+    1. Calcula días brutos = (fin - inicio).days
+    2. Descuenta días solapados con periodo COVID (16/03/2020 – 31/12/2021)
+    3. Descuenta días solapados con paralizaciones/suspensiones de InfoObras
+    4. Suma los días netos de todas las experiencias
+
+    No descuenta doble: si COVID y una paralización solapan, solo se descuenta una vez.
+
+    Args:
+        experiences: experiencias del profesional (con fechas parseadas)
+        proposal_date: fecha de presentación de la propuesta
+        suspension_periods: periodos de suspensión [(inicio, fin), ...] de InfoObras
+
+    Returns:
+        Días efectivos totales (puede ser 0, nunca negativo)
     """
-    raise NotImplementedError
+    total_effective = 0
+
+    for exp in experiences:
+        if not exp.start_date or not exp.end_date:
+            continue
+
+        # Días brutos
+        brutos = (exp.end_date - exp.start_date).days
+        if brutos <= 0:
+            continue
+
+        # Colectar todos los periodos a descontar (sin duplicar)
+        descuentos: list[tuple[date, date]] = []
+
+        # COVID
+        covid_overlap = _overlap_days(exp.start_date, exp.end_date, COVID_START, COVID_END)
+        if covid_overlap > 0:
+            descuentos.append((
+                max(exp.start_date, COVID_START),
+                min(exp.end_date, COVID_END),
+            ))
+
+        # Paralizaciones de InfoObras
+        if suspension_periods:
+            for sus_start, sus_end in suspension_periods:
+                overlap = _overlap_days(exp.start_date, exp.end_date, sus_start, sus_end)
+                if overlap > 0:
+                    descuentos.append((
+                        max(exp.start_date, sus_start),
+                        min(exp.end_date, sus_end),
+                    ))
+
+        # Fusionar periodos de descuento para no descontar doble
+        # (ej: si COVID y una paralización solapan)
+        if descuentos:
+            descuentos.sort()
+            fusionados: list[tuple[date, date]] = [descuentos[0]]
+            for start, end in descuentos[1:]:
+                prev_start, prev_end = fusionados[-1]
+                if start <= prev_end:
+                    # Solapan — fusionar
+                    fusionados[-1] = (prev_start, max(prev_end, end))
+                else:
+                    fusionados.append((start, end))
+
+            total_descuento = sum((e - s).days + 1 for s, e in fusionados)
+        else:
+            total_descuento = 0
+
+        netos = max(0, brutos - total_descuento)
+        total_effective += netos
+
+    return total_effective
+
+
+def calculate_effective_years(
+    experiences: list[Experience],
+    proposal_date: date,
+    suspension_periods: Optional[list[tuple[date, date]]] = None,
+) -> float:
+    """Convierte días efectivos a años (redondeado a 1 decimal)."""
+    days = calculate_effective_days(experiences, proposal_date, suspension_periods)
+    return round(days / 365.25, 1)

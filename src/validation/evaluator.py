@@ -309,6 +309,7 @@ def evaluar_profesional(
             cip_vigente=cip_vigente,
         )
         evaluacion.alertas = alertas
+        evaluacion.experiencia_ref = exp
         resultado.evaluaciones.append(evaluacion)
 
     return resultado
