@@ -67,8 +67,8 @@ ocr_output/{pdf}/*_profesionales_*.md  +  *_texto_*.md
         ↓
 [scraping]
   → InfoObras: búsqueda por nombre proyecto → CUI → estado, suspensiones
-  → SUNAT: fecha constitución empresa por RUC
-  → CIP: vigencia de colegiatura
+  → SUNAT: verificación manual (tiene CAPTCHA, no se automatiza)
+  → Colegios profesionales: verificación manual (CIP, CAP, CBP, etc.)
   CUIs no encontrados automáticamente → UI pide confirmación humana
         ↓
 [validación]
@@ -130,7 +130,7 @@ src/
     pdf_reader.py            ← pdfplumber → texto crudo del PDF bases
     tdr_extractor.py         ← LLM extrae requisitos por cargo
   validation/                ← motor de reglas determinístico (Pasos 4 y 5)
-  scraping/                  ← InfoObras, SUNAT, CIP
+  scraping/                  ← InfoObras
   reporting/                 ← genera Excel final (5 hojas)
   api/                       ← FastAPI: endpoints, job system, websockets
 utils/                       ← herramientas auxiliares y PoCs
@@ -142,7 +142,7 @@ data/                        ← datos procesados (NO subir al repo)
 - Python 3.12
 - `fastapi` + `uvicorn` — backend web
 - `pdfplumber` — extracción de texto de PDFs digitales (bases/TDR)
-- `requests` — scraping InfoObras, SUNAT, CIP y llamadas Ollama
+- `requests` — scraping InfoObras y llamadas Ollama
 - `openpyxl` — generación Excel
 - HTML + Tailwind CSS + Alpine.js — frontend (sin build step, sin npm)
 - SQLite — estado de jobs y resultados
@@ -181,17 +181,17 @@ Suma días efectivos descontando paralizaciones, suspensiones y COVID (16/03/202
 - ALT01: Fecha fin > fecha emisión certificado
 - ALT02: Periodo COVID (16/03/2020–31/12/2021)
 - ALT03: Experiencia > 20 años desde fecha de propuesta
-- ALT04: Empresa emisora constituida después del inicio de experiencia
+- ALT04: Empresa emisora constituida después del inicio de experiencia (verificación manual SUNAT)
 - ALT05: Certificado sin fecha de término ("a la fecha")
 - ALT06: Cargo no válido según bases
 - ALT07: Profesión no coincide con la requerida
 - ALT08: Tipo de obra no coincide
-- ALT09: CIP no vigente
+- ALT09: Colegiatura no vigente (verificación manual — cada colegio tiene portal distinto)
 
 ## Scraping
 - **InfoObras** (Contraloría): búsqueda por nombre → CUI → estado, avances, suspensiones, actas. Sin CAPTCHA, funciona con `requests`.
-- **SUNAT**: fecha de inicio de actividades por RUC (ALT04).
-- **CIP**: verificación de vigencia del número de colegiatura (ALT09).
+- **SUNAT**: verificación manual por el evaluador en https://e-consultaruc.sunat.gob.pe (tiene CAPTCHA, no se automatiza).
+- **Colegios profesionales** (CIP, CAP, CBP, CMP, etc.): verificación manual por el evaluador. Cada colegio tiene su propio portal — no se automatiza.
 
 ### Desambiguación de resultados InfoObras
 Cuando la búsqueda por nombre devuelve múltiples obras, se elige la más coherente con los datos del certificado. Criterio principal: la obra cuya fecha de inicio (`fechaIniObra`) sea la más cercana y anterior a la fecha de emisión del certificado. Ejemplo: si hay dos resultados con inicio en 2010 y 2019, y el certificado es de 2020, se elige la de 2019. Si la ambigüedad persiste (scores iguales o sin fecha), la obra queda en cola para confirmación manual en la UI.
