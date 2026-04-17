@@ -179,7 +179,14 @@ def evaluar_rtm(
                 ev.cumple_proyecto = "NO EVALUABLE"
 
     # --- Cols 13-14: Fecha de término ---
-    ev.fecha_termino = experiencia.end_date
+    # Regla "a la fecha": si end_date es None pero hay cert_issue_date,
+    # usar cert_issue_date como fecha fin efectiva (el cliente pidió esto).
+    # ALT05 sigue disparando porque technically no hay fecha fin explícita.
+    fecha_fin_efectiva = experiencia.end_date
+    if fecha_fin_efectiva is None and experiencia.cert_issue_date is not None:
+        fecha_fin_efectiva = experiencia.cert_issue_date
+
+    ev.fecha_termino = fecha_fin_efectiva
     ev.alerta_fecha_termino = "NO VALE" if experiencia.end_date is None else ""
 
     # --- Cols 15-17: Tipo de obra ---
@@ -247,11 +254,12 @@ def evaluar_rtm(
         ev.acredita_complejidad = "SI"
 
     # --- Col 22: Dentro de los últimos 20 años ---
-    if experiencia.end_date is not None:
+    # Usa fecha_fin_efectiva (cert_issue_date si end_date es None)
+    if fecha_fin_efectiva is not None:
         limite_20 = _fecha_hace_20_anos(proposal_date)
-        ev.dentro_20_anos = "SI" if experiencia.end_date >= limite_20 else "NO"
+        ev.dentro_20_anos = "SI" if fecha_fin_efectiva >= limite_20 else "NO"
     else:
-        ev.dentro_20_anos = "NO"  # Sin fecha fin = no se puede validar
+        ev.dentro_20_anos = "NO"  # Sin fecha fin ni fecha emisión
 
     return ev
 

@@ -262,11 +262,16 @@ def calculate_effective_days(
     total_effective = 0
 
     for exp in experiences:
-        if not exp.start_date or not exp.end_date:
+        if not exp.start_date:
+            continue
+
+        # Regla "a la fecha": si no hay end_date, usar cert_issue_date como fecha fin
+        end_date = exp.end_date if exp.end_date else exp.cert_issue_date
+        if not end_date:
             continue
 
         # Días brutos
-        brutos = (exp.end_date - exp.start_date).days
+        brutos = (end_date - exp.start_date).days
         if brutos <= 0:
             continue
 
@@ -274,21 +279,21 @@ def calculate_effective_days(
         descuentos: list[tuple[date, date]] = []
 
         # COVID
-        covid_overlap = _overlap_days(exp.start_date, exp.end_date, COVID_START, COVID_END)
+        covid_overlap = _overlap_days(exp.start_date, end_date, COVID_START, COVID_END)
         if covid_overlap > 0:
             descuentos.append((
                 max(exp.start_date, COVID_START),
-                min(exp.end_date, COVID_END),
+                min(end_date, COVID_END),
             ))
 
         # Paralizaciones de InfoObras
         if suspension_periods:
             for sus_start, sus_end in suspension_periods:
-                overlap = _overlap_days(exp.start_date, exp.end_date, sus_start, sus_end)
+                overlap = _overlap_days(exp.start_date, end_date, sus_start, sus_end)
                 if overlap > 0:
                     descuentos.append((
                         max(exp.start_date, sus_start),
-                        min(exp.end_date, sus_end),
+                        min(end_date, sus_end),
                     ))
 
         # Fusionar periodos de descuento para no descontar doble

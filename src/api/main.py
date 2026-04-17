@@ -783,6 +783,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                     signer=exp_data.get("firmante"), raw_text="", source_file="pipeline",
                     tipo_obra=exp_data.get("tipo_obra"), tipo_intervencion=exp_data.get("tipo_intervencion"),
                     tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                    cargo_firmante=exp_data.get("cargo_firmante"),
                 )
                 experiencias.append(exp)
 
@@ -1083,6 +1084,7 @@ async def evaluate_job(
                 tipo_obra=exp_data.get("tipo_obra"),
                 tipo_intervencion=exp_data.get("tipo_intervencion"),
                 tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                cargo_firmante=exp_data.get("cargo_firmante"),
             )
             experiencias.append(exp)
 

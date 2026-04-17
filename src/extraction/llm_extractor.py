@@ -500,11 +500,44 @@ def _normalizar_experiencia(exp: dict) -> dict:
     return normalizada
 
 
+def _deduplicar_experiencias(experiencias: list[dict]) -> list[dict]:
+    """
+    Elimina experiencias duplicadas del resultado del LLM.
+
+    El LLM a veces extrae el mismo certificado varias veces (especialmente
+    en documentos con OCR ruidoso). Se considera duplicado si coinciden:
+    - proyecto (primeros 50 chars normalizados)
+    - fecha_inicio
+    - fecha_fin
+    - empresa_emisora
+    """
+    vistos: set[tuple] = set()
+    dedup: list[dict] = []
+
+    for exp in experiencias:
+        proyecto = (exp.get("proyecto") or "").strip().upper()[:50]
+        fi = exp.get("fecha_inicio") or ""
+        ff = exp.get("fecha_fin") or ""
+        emp = (exp.get("empresa_emisora") or "").strip().upper()[:40]
+
+        clave = (proyecto, fi, ff, emp)
+        # Solo deduplica si hay datos suficientes para identificar
+        if proyecto and (fi or emp):
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+
+        dedup.append(exp)
+
+    return dedup
+
+
 def _normalizar_paso3(result: dict) -> dict:
-    """Normaliza todos los campos de todas las experiencias."""
+    """Normaliza todos los campos de todas las experiencias y deduplica."""
     experiencias = result.get("experiencias", [])
+    normalizadas = [_normalizar_experiencia(e) for e in experiencias]
     return {
-        "experiencias": [_normalizar_experiencia(e) for e in experiencias]
+        "experiencias": _deduplicar_experiencias(normalizadas)
     }
 
 

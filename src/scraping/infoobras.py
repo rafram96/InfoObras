@@ -92,6 +92,35 @@ class AvanceMensual:
 
 
 @dataclass
+class ContratistaInfo:
+    """Un contratista ejecutor registrado en InfoObras."""
+    tipo_empresa: str                  # "Consorcio" / "Individual"
+    ruc: Optional[str]                 # RUC con prefijo "C" si es consorcio
+    nombre_empresa: str
+    monto_soles: Optional[float]
+    numero_contrato: Optional[str]
+    fecha_contrato: Optional[date]
+    fecha_fin_contrato: Optional[date]
+
+
+@dataclass
+class ModificacionPlazoInfo:
+    """Una modificación de plazo (ampliación o suspensión)."""
+    tipo: str                          # "Ampliación del plazo" / "Suspensión del plazo"
+    causal: Optional[str]
+    dias_aprobados: int
+    fecha_aprobacion: Optional[date]
+    fecha_fin: Optional[date]
+
+
+@dataclass
+class EntregaTerrenoInfo:
+    """Registro de entrega de terreno."""
+    fecha_entrega: Optional[date]
+    porcentaje: Optional[float]
+
+
+@dataclass
 class WorkInfo:
     """Datos completos de una obra de InfoObras."""
     cui: str
@@ -109,6 +138,9 @@ class WorkInfo:
     supervisores: list[SupervisorInfo] = field(default_factory=list)
     residentes: list[ResidenteInfo] = field(default_factory=list)
     avances: list[AvanceMensual] = field(default_factory=list)
+    contratistas: list[ContratistaInfo] = field(default_factory=list)
+    modificaciones_plazo: list[ModificacionPlazoInfo] = field(default_factory=list)
+    entregas_terreno: list[EntregaTerrenoInfo] = field(default_factory=list)
     suspension_periods: list[tuple[date, date]] = field(default_factory=list)
     raw_busqueda: dict = field(default_factory=dict)
 
@@ -263,6 +295,53 @@ def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
     return avances
 
 
+def _procesar_contratistas(raw_list: list[dict]) -> list[ContratistaInfo]:
+    """Convierte la lista cruda de lContratista a ContratistaInfo."""
+    contratistas = []
+    for r in raw_list:
+        contratistas.append(ContratistaInfo(
+            tipo_empresa=r.get("TipoEmpresa", ""),
+            ruc=r.get("Ruc"),
+            nombre_empresa=r.get("NombreEmpresa", ""),
+            monto_soles=r.get("MontoSoles"),
+            numero_contrato=r.get("NumeroContrato"),
+            fecha_contrato=_parse_fecha_ddmmyyyy(r.get("FechaContrato")),
+            fecha_fin_contrato=_parse_fecha_ddmmyyyy(r.get("FechaFinContrato")),
+        ))
+    return contratistas
+
+
+def _procesar_modificaciones_plazo(raw_list: list[dict]) -> list[ModificacionPlazoInfo]:
+    """Convierte la lista cruda de lModificacionPlazo a ModificacionPlazoInfo."""
+    modificaciones = []
+    for r in raw_list:
+        modificaciones.append(ModificacionPlazoInfo(
+            tipo=r.get("TipoModificacion", ""),
+            causal=r.get("Causal"),
+            dias_aprobados=int(r.get("DiasAprobados", 0) or 0),
+            fecha_aprobacion=_parse_fecha_ddmmyyyy(r.get("FechaAprob")),
+            fecha_fin=_parse_fecha_ddmmyyyy(r.get("FechaFin")),
+        ))
+    return modificaciones
+
+
+def _procesar_entregas_terreno(raw_list: list[dict]) -> list[EntregaTerrenoInfo]:
+    """Convierte la lista cruda de lEntregaTerreno a EntregaTerrenoInfo."""
+    entregas = []
+    for r in raw_list:
+        porcentaje = r.get("Porcentaje")
+        if porcentaje is not None:
+            try:
+                porcentaje = float(porcentaje)
+            except (ValueError, TypeError):
+                porcentaje = None
+        entregas.append(EntregaTerrenoInfo(
+            fecha_entrega=_parse_fecha_ddmmyyyy(r.get("FechaEntrega")),
+            porcentaje=porcentaje,
+        ))
+    return entregas
+
+
 def _extraer_periodos_suspension(avances: list[AvanceMensual]) -> list[tuple[date, date]]:
     """
     Extrae periodos continuos de paralización/suspensión desde los avances.
@@ -360,11 +439,17 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
         supervisores = _procesar_supervisores(datos.get("lSupervisor", []))
         residentes = _procesar_residentes(datos.get("lResidente", []))
         avances = _procesar_avances(datos.get("lAvances", []))
+        contratistas = _procesar_contratistas(datos.get("lContratista", []))
+        modificaciones_plazo = _procesar_modificaciones_plazo(datos.get("lModificacionPlazo", []))
+        entregas_terreno = _procesar_entregas_terreno(datos.get("lEntregaTerreno", []))
         suspension_periods = _extraer_periodos_suspension(avances)
 
         logger.info(
-            "InfoObras: ObraId %s — %d avances, %d supervisores, %d residentes, %d periodos suspensión",
-            obra_id, len(avances), len(supervisores), len(residentes), len(suspension_periods),
+            "InfoObras: ObraId %s — %d avances, %d supervisores, %d residentes, "
+            "%d contratistas, %d mod. plazo, %d entregas terreno, %d periodos suspensión",
+            obra_id, len(avances), len(supervisores), len(residentes),
+            len(contratistas), len(modificaciones_plazo), len(entregas_terreno),
+            len(suspension_periods),
         )
 
         return WorkInfo(
@@ -383,6 +468,9 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
             supervisores=supervisores,
             residentes=residentes,
             avances=avances,
+            contratistas=contratistas,
+            modificaciones_plazo=modificaciones_plazo,
+            entregas_terreno=entregas_terreno,
             suspension_periods=suspension_periods,
             raw_busqueda=obra_raw,
         )
@@ -836,6 +924,9 @@ def buscar_obra_por_certificado(
             supervisores = _procesar_supervisores(datos.get("lSupervisor", []))
             residentes = _procesar_residentes(datos.get("lResidente", []))
             avances = _procesar_avances(datos.get("lAvances", []))
+            contratistas = _procesar_contratistas(datos.get("lContratista", []))
+            modificaciones_plazo = _procesar_modificaciones_plazo(datos.get("lModificacionPlazo", []))
+            entregas_terreno = _procesar_entregas_terreno(datos.get("lEntregaTerreno", []))
             suspension_periods = _extraer_periodos_suspension(avances)
 
             return WorkInfo(
@@ -848,6 +939,9 @@ def buscar_obra_por_certificado(
                 supervisores=supervisores,
                 residentes=residentes,
                 avances=avances,
+                contratistas=contratistas,
+                modificaciones_plazo=modificaciones_plazo,
+                entregas_terreno=entregas_terreno,
                 suspension_periods=suspension_periods,
                 raw_busqueda=mejor.obra_raw,
             )

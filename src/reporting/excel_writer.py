@@ -243,7 +243,12 @@ def _write_base_datos(
 
             # Col 9-10: Fechas (de Experience)
             start = exp.start_date if exp else None
-            end = exp.end_date if exp else ev.fecha_termino
+            # Regla "a la fecha": si end_date es None, usar cert_issue_date como fecha fin efectiva
+            end = None
+            if exp:
+                end = exp.end_date if exp.end_date else exp.cert_issue_date
+            if end is None:
+                end = ev.fecha_termino
             ws.cell(row=row, column=9, value=_fmt_date(start)).font = BODY_FONT
             ws.cell(row=row, column=10, value=_fmt_date(end)).font = BODY_FONT
 
@@ -279,7 +284,7 @@ def _write_base_datos(
 
             # Col 18-19: Firmante (de Experience)
             ws.cell(row=row, column=18, value=exp.signer if exp else "").font = BODY_FONT
-            ws.cell(row=row, column=19, value="").font = BODY_FONT  # cargo_firmante no está en Experience
+            ws.cell(row=row, column=19, value=exp.cargo_firmante if exp else "").font = BODY_FONT
 
             # Col 20: Alerta firmante (requiere validación manual)
             ws.cell(row=row, column=20, value="").font = BODY_FONT

@@ -148,6 +148,7 @@ def main():
                 tipo_obra=exp_data.get("tipo_obra"),
                 tipo_intervencion=exp_data.get("tipo_intervencion"),
                 tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                cargo_firmante=exp_data.get("cargo_firmante"),
             )
             experiencias.append(exp)
 

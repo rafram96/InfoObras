@@ -27,3 +27,4 @@ utils/tools/horario
 docs/desarrollo
 utils/**/*.html
 claude_god/
+*.html

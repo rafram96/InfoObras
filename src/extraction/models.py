@@ -90,6 +90,7 @@ class Experience:
     tipo_obra: Optional[str] = None           # sector: salud, educacion, vial, etc.
     tipo_intervencion: Optional[str] = None   # accion: construccion, mejoramiento, etc.
     tipo_acreditacion: Optional[str] = None   # tipo doc: certificado, constancia, contrato
+    cargo_firmante: Optional[str] = None      # cargo de quien firma el certificado
 
 
 # ---------------------------------------------------------------------------
