@@ -212,22 +212,27 @@ def _parse_progress(job_id: str, line: str) -> None:
             progress_stage="Convirtiendo PDF",
             progress_pct=3,
         )
+        _append_job_log(job_id, f"Motor-OCR: {total} páginas detectadas")
         return
 
     if "Pasada 1: PaddleOCR" in line:
         _update_job(job_id, progress_stage="PaddleOCR", progress_pct=8)
+        _append_job_log(job_id, "Pasada 1: PaddleOCR iniciada")
         return
 
     if "Pasada 1 completada" in line:
         _update_job(job_id, progress_stage="PaddleOCR completado", progress_pct=55)
+        _append_job_log(job_id, "Pasada 1: PaddleOCR completada")
         return
 
     if "no se necesita Qwen" in line:
         _update_job(job_id, progress_stage="Segmentación", progress_pct=90)
+        _append_job_log(job_id, "No se requiere Qwen VL — pasando a segmentación")
         return
 
     if "Pasada 2: Qwen fallback" in line:
         _update_job(job_id, progress_stage="Qwen fallback", progress_pct=58)
+        _append_job_log(job_id, "Pasada 2: Qwen VL fallback iniciado")
         return
 
     m = _RE_QWEN_PROGRESS.search(line)
@@ -240,14 +245,19 @@ def _parse_progress(job_id: str, line: str) -> None:
             progress_stage=f"Qwen {current}/{total}",
             progress_pct=min(scaled, 88),
         )
+        # Solo loguear hitos: al completar, no cada página
+        if current == total:
+            _append_job_log(job_id, f"Qwen VL completado — {total} páginas procesadas")
         return
 
     if "segment_document" in line.lower() or "Segmentación" in line:
         _update_job(job_id, progress_stage="Segmentación", progress_pct=90)
+        _append_job_log(job_id, "Iniciando segmentación por profesional")
         return
 
     if "[subprocess_wrapper] OK" in line:
         _update_job(job_id, progress_stage="OCR completado", progress_pct=91)
+        _append_job_log(job_id, "Motor-OCR completado exitosamente")
         return
 
 
@@ -378,6 +388,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                         job_id,
                         total_blocks,
                     )
+                    _append_job_log(job_id, f"Extracción LLM iniciada — {total_blocks} profesionales")
 
                     for i, block in enumerate(blocks):
                         pct = 92 + int((i / max(total_blocks, 1)) * 7)
@@ -389,6 +400,12 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 
                         try:
                             extraction = extract_block(block)
+                            n_exp = len(extraction.get("experiencias", []))
+                            prof_name = (extraction.get("profesional") or {}).get("nombre") or block.cargo
+                            _append_job_log(
+                                job_id,
+                                f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — {prof_name[:40]} ({n_exp} exp)",
+                            )
                         except Exception as exc:
                             logger.warning(
                                 "Job %s: extracción falló para bloque %d (%s): %s",
@@ -396,6 +413,10 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                                 block.index,
                                 block.cargo,
                                 exc,
+                            )
+                            _append_job_log(
+                                job_id,
+                                f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — ERROR: {str(exc)[:80]}",
                             )
                             extraction = {
                                 "profesional": {
@@ -422,11 +443,13 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
                         job_id,
                         total_blocks,
                     )
-                except Exception:
+                    _append_job_log(job_id, f"Extracción LLM completada — {total_blocks} profesionales")
+                except Exception as e:
                     logger.exception(
                         "Job %s: error en fase de extracción — guardando resultado OCR",
                         job_id,
                     )
+                    _append_job_log(job_id, f"ERROR en extracción LLM: {e}")
             else:
                 logger.warning(
                     "Job %s: archivos .md no encontrados en %s — omitiendo extracción",
