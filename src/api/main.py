@@ -1152,6 +1152,13 @@ async def evaluate_job(
     }
 
 
+@app.get("/api/jobs/{job_id}/excel/exists", tags=["Evaluation"])
+async def excel_exists(job_id: str):
+    """Retorna si el Excel de evaluación RTM existe para un job."""
+    excel_path = OUTPUT_DIR / job_id / f"evaluacion_{job_id}.xlsx"
+    return {"exists": excel_path.exists()}
+
+
 @app.get("/api/jobs/{job_id}/excel", tags=["Evaluation"])
 async def download_excel(job_id: str):
     """Descarga el Excel de evaluación RTM de un job."""
