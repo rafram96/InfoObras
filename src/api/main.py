@@ -507,7 +507,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
 
     try:
         # ── Paso 1: Extraer texto del PDF de bases ──────────────────────────
-        _update_job(job_id, progress_pct=5, progress_stage="Extrayendo texto del PDF")
+        _update_job(job_id, progress_pct=3, progress_stage="Extrayendo texto del PDF")
         _append_job_log(job_id, "Extrayendo texto con pdfplumber...")
 
         import pdfplumber
@@ -524,11 +524,12 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
             job_id,
             f"pdfplumber: {num_pages} páginas, {int(chars_per_page)} chars/pág promedio",
         )
+        _update_job(job_id, progress_pct=8, progress_stage="Texto extraído")
 
         if chars_per_page < 50:
             _append_job_log(job_id, "Texto insuficiente — PDF probablemente escaneado")
             _update_job(
-                job_id, progress_pct=10,
+                job_id, progress_pct=12,
                 progress_stage="PDF escaneado — ejecutando OCR",
             )
             # Fallback a motor-OCR (mismo flujo que _run_job pero solo para texto)
