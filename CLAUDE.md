@@ -17,19 +17,21 @@ FastAPI (este repo)
   └─ sirve resultados en UI web propia
 ```
 
-- **motor-OCR** (repo separado, NO tocar): caja negra. Entra PDF escaneado, salen `.md` en `ocr_output/`. Se invoca como subprocess desde el backend.
-- **Este repo**: orquesta todo — web app, extracción, validación, scraping, UI.
+- **motor-OCR** (repo separado, tratar como caja negra): recibe PDF, genera `.md` en `ocr_output/`. Se invoca como subprocess. Expone 3 modes (`ocr_only`, `segmentation`, `pdfplumber_segmentation`). Ver `motor-OCR/CLAUDE.md` para contratos. **Cambios permitidos solo aditivos**: agregar engines a `src/engines/` sin tocar PaddleOCR/Qwen.
+- **Este repo**: orquesta todo — web app, extracción, validación, scraping, UI. Decide qué mode del wrapper invocar (fast-path vs OCR completo).
 
 ## Repos y entornos
 
 ### motor-OCR
-- Repo local: `C:\Users\Holbi\Documents\Freelance\proyectos\motor-OCR`
+- Repo local: `C:\Users\Holbi\Documents\Freelance\proyectos\InfoObras\motor-OCR`
 - Servidor del cliente: `D:\proyectos\motor-OCR`
 - Python 3.11, PaddleOCR, GPU NVIDIA Quadro RTX 5000 16GB
-- Se ejecuta hoy manualmente como script `.py` — en producción se invoca como subprocess desde el backend
+- Se invoca como subprocess vía `subprocess_wrapper.py` con un JSON de args
 - Output en: `D:\proyectos\infoobras\ocr_output\{nombre_pdf}\`
-- Outputs de prueba actualmente en `data/` de este repo
-- **No tocar — funciona y tiene dependencias muy frágiles**
+- **Engines disponibles:**
+  - PaddleOCR + Qwen-VL (flujo OCR completo — `mode: segmentation`)
+  - pdfplumber (fast-path para PDFs digitales — `mode: pdfplumber_segmentation`, agregado 2026-04-19)
+- **Cambios permitidos solo aditivos.** No tocar pipeline PaddleOCR/Qwen existente. Agregar nuevos engines a `src/engines/` sí es válido (siguiendo el patrón de `engines/pdfplumber/`).
 
 ### Este repo (Alpamayo-InfoObras)
 - Repo local: `C:\Users\Holbi\Documents\Freelance\Alpamayo-InfoObras`
@@ -51,10 +53,14 @@ FastAPI (este repo)
 ## Flujo completo del sistema
 ```
 Usuario sube:
-  ├─ PDF propuesta técnica (2300+ págs, escaneado)
+  ├─ PDF propuesta técnica (2300+ págs, escaneado o digital)
   └─ PDF bases del concurso (texto digital)
         ↓
-[motor-OCR — subprocess] OCR + segmentación
+_decidir_mode(propuesta) — muestrea 5 págs con pdfplumber
+  ├─ chars/pág ≥ 200 → mode: pdfplumber_segmentation (fast-path)
+  └─ chars/pág < 200 → mode: segmentation (PaddleOCR + Qwen-VL)
+        ↓
+[motor-OCR — subprocess] genera los mismos .md en ambos modes
         ↓
 ocr_output/{pdf}/*_profesionales_*.md  +  *_texto_*.md
         ↓
@@ -243,10 +249,33 @@ uvicorn src.api.main:app --reload --port 8000
 pytest
 ```
 
+## Fast-path pdfplumber (agregado 2026-04-19)
+
+Antes de llamar al wrapper motor-OCR, `_run_job` en `src/api/main.py` decide qué mode invocar:
+
+1. `_chars_per_page_sample(pdf_path, sample=5)` — abre el PDF con pdfplumber y calcula chars/pág promedio en las primeras 5 páginas.
+2. `_decidir_mode(job_id, pdf_path, force_motor_ocr)`:
+   - `FORCE_MOTOR_OCR=true` en `.env` o `force_motor_ocr=true` en el payload del job → `segmentation`
+   - chars/pág ≥ `PDFPLUMBER_CHARS_THRESHOLD` (default 200) → `pdfplumber_segmentation`
+   - si no → `segmentation`
+3. `_ejecutar_ocr_con_fallback(...)` invoca el subprocess. Si `mode="pdfplumber_segmentation"` retorna <2 secciones → **fallback automático** a `segmentation` (limpia los `.md` del intento fallido y reintenta).
+
+El mode `pdfplumber_segmentation` vive en motor-OCR (`src/engines/pdfplumber/`). Reutiliza los filtros y fuzzy matching de segmentación del motor pero sustituye Qwen-VL (visual) por qwen2.5:14b texto-only para páginas borderline.
+
+**Checkbox "Forzar motor-OCR"** en `/nuevo-analisis` envía `force_motor_ocr=true` al endpoint POST `/api/jobs`. Útil cuando el PDF es digital pero tiene sellos/tachaduras que necesitan análisis visual.
+
+**Result JSON del wrapper** incluye ahora `doc.engine` (`"pdfplumber"` o `"motor_ocr"`) y `doc.pages_pdfplumber`. El badge del Panel (`jobs/[id]/page.tsx`) cambia según este valor.
+
+Variables en `.env.example`:
+```
+FORCE_MOTOR_OCR=false
+PDFPLUMBER_CHARS_THRESHOLD=200
+```
+
 ## Qué NO hacer
 - No instalar PaddleOCR ni dependencias de ML aquí
 - No modificar archivos en `ocr_output/` — son generados por motor-OCR
 - No subir PDFs ni datos del cliente al repositorio
-- No tocar el repo motor-OCR — funciona y sus dependencias son frágiles
+- **No tocar el pipeline PaddleOCR/Qwen del motor-OCR** — dependencias frágiles. Sí se pueden agregar engines aditivos a `motor-OCR/src/engines/` siguiendo el patrón de `engines/pdfplumber/` (usado para el fast-path)
 - No usar APIs cloud para procesamiento — todo debe correr on-premise
-- No modificar el código del motor-OCR — sí se puede invocar como subprocess para bases escaneadas
+- No romper el formato de `*_profesionales_*.md` (contrato con `md_parser.py`)

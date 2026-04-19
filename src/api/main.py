@@ -261,22 +261,70 @@ def _parse_progress(job_id: str, line: str) -> None:
         return
 
 
-# ── Job runner ────────────────────────────────────────────────────────────────
-def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
-    _check_cancelled(job_id)
-    _update_job(
-        job_id, status="running", progress_pct=1,
-        progress_stage="Iniciando",
-        started_at=datetime.now(timezone.utc),
+# ── OCR engine dispatcher: pdfplumber fast-path vs motor-OCR completo ──────
+def _chars_per_page_sample(pdf_path: Path, sample: int = 5) -> float:
+    """
+    Muestra las primeras `sample` páginas con pdfplumber y retorna chars/página.
+    Usado para decidir si el PDF es digital (>=200 chars/pág) o escaneado.
+    """
+    import pdfplumber
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            n = min(sample, len(pdf.pages))
+            if n == 0:
+                return 0.0
+            total = sum(
+                len((pdf.pages[i].extract_text() or "").strip())
+                for i in range(n)
+            )
+            return total / n
+    except Exception as e:
+        logger.warning("chars_per_page_sample falló para %s: %s", pdf_path, e)
+        return 0.0
+
+
+def _decidir_mode(job_id: str, pdf_path: Path, force_motor_ocr: bool) -> str:
+    """
+    Decide qué mode invocar del wrapper motor-OCR.
+    - Si force_motor_ocr (flag UI o env FORCE_MOTOR_OCR) → "segmentation".
+    - Si chars/pág >= umbral (default 200) → "pdfplumber_segmentation".
+    - Si no → "segmentation".
+    """
+    force_env = os.getenv("FORCE_MOTOR_OCR", "false").lower() == "true"
+    if force_motor_ocr or force_env:
+        origen = "flag UI" if force_motor_ocr else "env FORCE_MOTOR_OCR"
+        _append_job_log(job_id, f"Forzando motor-OCR completo ({origen})")
+        return "segmentation"
+
+    chars = _chars_per_page_sample(pdf_path, sample=5)
+    threshold = int(os.getenv("PDFPLUMBER_CHARS_THRESHOLD", "200"))
+    _append_job_log(
+        job_id,
+        f"Muestra primeras 5 págs: {chars:.0f} chars/pág (umbral {threshold})",
     )
-    _append_job_log(job_id, "Job iniciado — modo extracción")
+    if chars >= threshold:
+        _append_job_log(job_id, "PDF digital detectado → fast-path pdfplumber")
+        return "pdfplumber_segmentation"
+    _append_job_log(job_id, "PDF escaneado/mixto → motor-OCR completo")
+    return "segmentation"
 
-    job_output_dir = str(OUTPUT_DIR / job_id)
+
+def _invocar_wrapper(
+    job_id: str,
+    pdf_path: Path,
+    pages: Optional[list],
+    job_output_dir: str,
+    mode: str,
+    parse_progress: bool = True,
+) -> dict:
+    """
+    Invoca el subprocess del wrapper motor-OCR con el mode indicado.
+    Retorna el dict parseado del results JSON. Lanza en caso de error.
+    """
     args_file = results_file = None
-
     try:
         args = {
-            "mode": "segmentation",
+            "mode": mode,
             "pdf_path": str(pdf_path),
             "pages": pages,
             "output_dir": job_output_dir,
@@ -291,9 +339,6 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             results_file = f.name
-
-        logger.info("Job %s: llamando a motor-OCR...", job_id)
-        _append_job_log(job_id, "Iniciando motor-OCR subprocess")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -313,27 +358,94 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             if not line:
                 continue
             logger.info("Job %s | %s", job_id, line)
-            try:
-                _parse_progress(job_id, line)
-            except Exception:
-                pass
+            if parse_progress:
+                try:
+                    _parse_progress(job_id, line)
+                except Exception:
+                    pass
 
         process.wait(timeout=9000)
-
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, MOTOR_OCR_WRAPPER)
 
         with open(results_file, encoding="utf-8") as f:
-            raw = json.load(f)
+            return json.load(f)
+    finally:
+        if args_file:
+            Path(args_file).unlink(missing_ok=True)
+        if results_file:
+            Path(results_file).unlink(missing_ok=True)
+
+
+def _ejecutar_ocr_con_fallback(
+    job_id: str,
+    pdf_path: Path,
+    pages: Optional[list],
+    job_output_dir: str,
+    mode: str,
+    parse_progress: bool = True,
+) -> dict:
+    """
+    Ejecuta el wrapper con el mode indicado. Si mode es pdfplumber_segmentation
+    y detecta <2 secciones, reintenta automáticamente con "segmentation".
+    """
+    raw = _invocar_wrapper(
+        job_id, pdf_path, pages, job_output_dir, mode, parse_progress=parse_progress
+    )
+
+    if mode == "pdfplumber_segmentation":
+        n_sec = len(raw.get("secciones", []))
+        if n_sec < 2:
+            _append_job_log(
+                job_id,
+                f"Fast-path detectó solo {n_sec} secciones — "
+                "fallback automático a motor-OCR completo.",
+            )
+            # Limpiar .md del intento fallido para que el retry no los mezcle
+            for old_md in Path(job_output_dir).glob("*.md"):
+                try:
+                    old_md.unlink()
+                except Exception:
+                    pass
+            raw = _invocar_wrapper(
+                job_id, pdf_path, pages, job_output_dir, "segmentation",
+                parse_progress=parse_progress,
+            )
+    return raw
+
+
+# ── Job runner ────────────────────────────────────────────────────────────────
+def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr: bool = False) -> None:
+    _check_cancelled(job_id)
+    _update_job(
+        job_id, status="running", progress_pct=1,
+        progress_stage="Iniciando",
+        started_at=datetime.now(timezone.utc),
+    )
+    _append_job_log(job_id, "Job iniciado — modo extracción")
+
+    job_output_dir = str(OUTPUT_DIR / job_id)
+    Path(job_output_dir).mkdir(parents=True, exist_ok=True)
+
+    try:
+        mode = _decidir_mode(job_id, pdf_path, force_motor_ocr)
+        logger.info("Job %s: invocando wrapper mode=%s", job_id, mode)
+        _append_job_log(job_id, f"Iniciando wrapper motor-OCR (mode={mode})")
+
+        raw = _ejecutar_ocr_con_fallback(
+            job_id, pdf_path, pages, job_output_dir, mode,
+        )
 
         doc = raw["doc"]
         result = {
             "total_pages": doc["total_pages"],
-            "pages_paddle": doc["pages_paddle"],
-            "pages_qwen": doc["pages_qwen"],
+            "pages_paddle": doc.get("pages_paddle", 0),
+            "pages_qwen": doc.get("pages_qwen", 0),
+            "pages_pdfplumber": doc.get("pages_pdfplumber", 0),
             "pages_error": doc["pages_error"],
             "conf_promedio": round(doc["conf_promedio_documento"], 3),
             "tiempo_total": round(doc["tiempo_total"], 1),
+            "engine": doc.get("engine", "motor_ocr"),
             "secciones": [
                 {
                     "index": s["section_index"],
@@ -349,13 +461,18 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             ],
         }
         logger.info(
-            "Job %s OCR completado: %d págs, %d profesionales",
+            "Job %s OCR completado (engine=%s): %d págs, %d profesionales",
             job_id,
+            result["engine"],
             doc["total_pages"],
             len(raw["secciones"]),
         )
 
-        _append_job_log(job_id, f"OCR completado — {doc['total_pages']} págs, {len(raw['secciones'])} profesionales")
+        _append_job_log(
+            job_id,
+            f"OCR completado (engine={result['engine']}) — "
+            f"{doc['total_pages']} págs, {len(raw['secciones'])} profesionales",
+        )
 
         # ── Fase 2: Extracción LLM (Pasos 2-3) ─────────────────────────────
         if _EXTRACTION_AVAILABLE:
@@ -487,10 +604,6 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list]) -> None:
             error=str(e),
         )
     finally:
-        if args_file:
-            Path(args_file).unlink(missing_ok=True)
-        if results_file:
-            Path(results_file).unlink(missing_ok=True)
         pdf_path.unlink(missing_ok=True)
 
 
@@ -598,7 +711,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
 
 
 # ── Full Pipeline Job runner ───────────────────────────────────────────────
-def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional[list]) -> None:
+def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional[list], force_motor_ocr: bool = False) -> None:
     """
     Pipeline completo: propuesta + bases → OCR → Pasos 1-4 → Excel.
 
@@ -634,56 +747,26 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         _append_job_log(job_id, "FASE 1: OCR + Extracción de propuesta")
         _update_job(job_id, progress_pct=2, progress_stage="OCR propuesta")
 
-        # Reusar _run_job internamente pero capturar el resultado
         job_output_dir = str(OUTPUT_DIR / job_id)
+        Path(job_output_dir).mkdir(parents=True, exist_ok=True)
 
-        # Motor-OCR subprocess
-        args = {
-            "mode": "segmentation",
-            "pdf_path": str(pdf_path),
-            "pages": pages,
-            "output_dir": job_output_dir,
-            "keep_images": False,
-        }
+        mode = _decidir_mode(job_id, pdf_path, force_motor_ocr)
+        logger.info("Job %s (full): invocando wrapper mode=%s", job_id, mode)
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
-            json.dump(args, f)
-            args_file = f.name
-
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            results_file = f.name
-
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-
-        process = subprocess.Popen(
-            [MOTOR_OCR_PYTHON, MOTOR_OCR_WRAPPER, args_file, results_file],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=env,
+        raw = _ejecutar_ocr_con_fallback(
+            job_id, pdf_path, pages, job_output_dir, mode,
         )
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if line:
-                try:
-                    _parse_progress(job_id, line)
-                except Exception:
-                    pass
-        process.wait(timeout=9000)
-
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, MOTOR_OCR_WRAPPER)
-
-        with open(results_file, encoding="utf-8") as f:
-            raw = json.load(f)
 
         doc = raw["doc"]
         extraction_result = {
             "total_pages": doc["total_pages"],
-            "pages_paddle": doc["pages_paddle"],
-            "pages_qwen": doc["pages_qwen"],
+            "pages_paddle": doc.get("pages_paddle", 0),
+            "pages_qwen": doc.get("pages_qwen", 0),
+            "pages_pdfplumber": doc.get("pages_pdfplumber", 0),
             "pages_error": doc["pages_error"],
             "conf_promedio": round(doc["conf_promedio_documento"], 3),
             "tiempo_total": round(doc["tiempo_total"], 1),
+            "engine": doc.get("engine", "motor_ocr"),
             "secciones": [
                 {
                     "index": s["section_index"],
@@ -699,10 +782,11 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             ],
         }
 
-        Path(args_file).unlink(missing_ok=True)
-        Path(results_file).unlink(missing_ok=True)
-
-        _append_job_log(job_id, f"OCR completado — {doc['total_pages']} págs, {len(raw['secciones'])} profesionales")
+        _append_job_log(
+            job_id,
+            f"OCR completado (engine={extraction_result['engine']}) — "
+            f"{doc['total_pages']} págs, {len(raw['secciones'])} profesionales",
+        )
 
         # Extracción LLM (Pasos 2-3)
         if _EXTRACTION_AVAILABLE:
@@ -884,6 +968,7 @@ async def create_job(
     job_type: str = Form("extraction"),
     pages_from: Optional[int] = Form(None),
     pages_to: Optional[int] = Form(None),
+    force_motor_ocr: bool = Form(False),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Solo se aceptan archivos PDF")
@@ -930,9 +1015,9 @@ async def create_job(
     if job_type == "tdr":
         _executor.submit(_run_tdr_job, job_id, pdf_path)
     elif job_type == "full":
-        _executor.submit(_run_full_job, job_id, pdf_path, bases_path, pages)
+        _executor.submit(_run_full_job, job_id, pdf_path, bases_path, pages, force_motor_ocr)
     else:
-        _executor.submit(_run_job, job_id, pdf_path, pages)
+        _executor.submit(_run_job, job_id, pdf_path, pages, force_motor_ocr)
 
     return {"id": job_id, "status": "pending", "job_type": job_type}
 
@@ -1151,6 +1236,56 @@ async def evaluate_job(
         "excel_path": str(excel_path),
         "download_url": f"/api/jobs/{extraction_job_id}/excel",
     }
+
+
+@app.get("/api/jobs/{job_id}/files", tags=["Jobs"])
+async def list_job_files(job_id: str):
+    """
+    Lista los archivos .md generados por motor-OCR / pdfplumber en el output_dir.
+    Usado por el visor de debug para ver los archivos generados.
+    """
+    job_dir = OUTPUT_DIR / job_id
+    if not job_dir.exists():
+        return {"files": []}
+
+    files = []
+    for f in sorted(job_dir.rglob("*.md")):
+        try:
+            stat = f.stat()
+            rel = f.relative_to(job_dir)
+            files.append({
+                "name": f.name,
+                "rel_path": str(rel).replace("\\", "/"),
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning("list_job_files: error leyendo %s: %s", f, e)
+    return {"files": files}
+
+
+@app.get("/api/jobs/{job_id}/files/{filename:path}", tags=["Jobs"])
+async def get_job_file(job_id: str, filename: str):
+    """
+    Retorna contenido raw de un archivo .md generado por motor-OCR.
+    `filename` es la ruta relativa dentro de OUTPUT_DIR/{job_id}/.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    # Sanear: solo permitir .md y rutas relativas sin ..
+    safe_name = filename.replace("\\", "/")
+    if ".." in safe_name.split("/") or not safe_name.endswith(".md"):
+        raise HTTPException(400, "Nombre de archivo inválido")
+
+    file_path = OUTPUT_DIR / job_id / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo archivo: {e}")
+    return PlainTextResponse(content, media_type="text/markdown; charset=utf-8")
 
 
 @app.get("/api/jobs/{job_id}/excel/exists", tags=["Evaluation"])
