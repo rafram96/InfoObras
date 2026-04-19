@@ -177,16 +177,23 @@ Motor de reglas determinístico: cumple/no cumple por profesión, cargo, tipo de
 ### Paso 5 — Evaluación de años de experiencia
 Suma días efectivos descontando paralizaciones, suspensiones y COVID (16/03/2020–31/12/2021).
 
-## Las 9 alertas del motor de reglas
+## Las 10 alertas del motor de reglas
 - ALT01: Fecha fin > fecha emisión certificado
 - ALT02: Periodo COVID (16/03/2020–31/12/2021)
-- ALT03: Experiencia > 20 años desde fecha de propuesta
+- ALT03: Experiencia > **25 años** desde fecha de propuesta (actualizado 18-abr-2026, antes 20)
 - ALT04: Empresa emisora constituida después del inicio de experiencia (verificación manual SUNAT)
 - ALT05: Certificado sin fecha de término ("a la fecha")
 - ALT06: Cargo no válido según bases
 - ALT07: Profesión no coincide con la requerida
 - ALT08: Tipo de obra no coincide
 - ALT09: Colegiatura no vigente (verificación manual — cada colegio tiene portal distinto)
+- ALT10: **Experiencia antes de fecha de colegiatura** (nueva, 18-abr-2026) — los días anteriores a `fecha_colegiacion` no cuentan
+
+## Reglas adicionales de cálculo (actualizado 18-abr-2026)
+
+- **Fusión de periodos solapados por profesional**: al sumar días efectivos, los periodos solapados del MISMO profesional se fusionan (no se suman doble). Ejemplo: Obra A (2015-2020) + Obra B (2014-2016) = ~6 años efectivos, no 11.
+- **Match por actividades**: si `match_cargo` falla, comparar la descripción de actividades del certificado vs las actividades válidas según bases. Si coincide → "CUMPLE (por actividades)".
+- **Distinción certificado vs constancia**: `tipo_acreditacion` se extrae; constancia requiere tratamiento diferencial (pendiente definir con cliente).
 
 ## Scraping
 - **InfoObras** (Contraloría): búsqueda por nombre → CUI → estado, avances, suspensiones, actas. Sin CAPTCHA, funciona con `requests`.
