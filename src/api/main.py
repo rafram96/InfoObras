@@ -613,6 +613,50 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr
     # Se borra al eliminar el job via DELETE /api/jobs/:id.
 
 
+def _escribir_texto_tdr_md(
+    output_dir: Path,
+    pdf_path: Path,
+    paginas_texto: dict[int, str],
+    chars_per_page: float,
+    engine_label: str = "pdfplumber",
+) -> None:
+    """
+    Escribe el texto extraido de las bases TDR como Markdown estructurado
+    en OUTPUT_DIR/{job_id}/. Lo usa el visor de debug de /herramientas/debug-pdfplumber
+    para mostrar que paginas leyo pdfplumber y que texto extrajo de cada una.
+
+    Formato compatible con el `## Página N` del motor-OCR para que el viewer
+    lo renderize igual.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    nombre = pdf_path.stem
+    ruta = output_dir / f"{nombre}_texto_tdr_{ts}.md"
+    total_paginas = len(paginas_texto)
+
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(f"# Texto extraido (TDR) — {pdf_path.name}\n\n")
+        f.write(f"**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n")
+        f.write(f"**PDF:** `{pdf_path}`  \n")
+        f.write(f"**Engine:** {engine_label} (TDR)  \n")
+        f.write(
+            f"**Paginas:** {total_paginas} | "
+            f"chars/pag promedio: {int(chars_per_page)}\n\n"
+        )
+        f.write("---\n\n")
+
+        for pn in sorted(paginas_texto):
+            texto = paginas_texto[pn]
+            chars = len(texto.strip())
+            f.write(f"## Pagina {pn}  _🟣 {engine_label} · {chars} chars_\n\n")
+            if not texto.strip():
+                f.write("> _(pagina en blanco o sin texto extraible)_\n\n")
+            else:
+                f.write("```\n")
+                f.write(texto)
+                f.write("\n```\n\n")
+            f.write("---\n\n")
+
+
 # ── TDR Job runner ─────────────────────────────────────────────────────────
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
@@ -624,26 +668,46 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     )
     _append_job_log(job_id, "Job iniciado — modo TDR")
 
+    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         # ── Paso 1: Extraer texto del PDF de bases ──────────────────────────
         _update_job(job_id, progress_pct=3, progress_stage="Extrayendo texto del PDF")
         _append_job_log(job_id, "Extrayendo texto con pdfplumber...")
 
         import pdfplumber
-        full_text = ""
+        paginas_texto: dict[int, str] = {}
         num_pages = 0
         with pdfplumber.open(str(pdf_path)) as pdf:
             num_pages = len(pdf.pages)
             for page in pdf.pages:
-                text = page.extract_text() or ""
-                full_text += f"\n--- Página {page.page_number} ---\n{text}"
+                paginas_texto[page.page_number] = page.extract_text() or ""
 
-        chars_per_page = len(full_text.strip()) / max(num_pages, 1)
+        full_text = "\n".join(
+            f"--- Página {pn} ---\n{paginas_texto[pn]}"
+            for pn in sorted(paginas_texto)
+        )
+
+        chars_total = sum(len(t.strip()) for t in paginas_texto.values())
+        chars_per_page = chars_total / max(num_pages, 1)
         _append_job_log(
             job_id,
             f"pdfplumber: {num_pages} páginas, {int(chars_per_page)} chars/pág promedio",
         )
         _update_job(job_id, progress_pct=8, progress_stage="Texto extraído")
+
+        # Guardar texto extraído por pdfplumber como .md para el debug viewer
+        try:
+            _escribir_texto_tdr_md(
+                job_output_dir,
+                pdf_path,
+                paginas_texto,
+                chars_per_page,
+                engine_label="pdfplumber",
+            )
+        except Exception as md_err:
+            logger.warning("No se pudo escribir texto TDR .md: %s", md_err)
 
         if chars_per_page < 50:
             _append_job_log(job_id, "Texto insuficiente — PDF probablemente escaneado")
@@ -656,7 +720,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
                 from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
                 _append_job_log(job_id, "Invocando motor-OCR para bases escaneadas...")
                 full_text = invoke_motor_ocr(
-                    str(pdf_path), output_dir=str(OUTPUT_DIR),
+                    str(pdf_path), output_dir=str(job_output_dir),
                 )
                 _append_job_log(job_id, f"motor-OCR completado — {len(full_text)} chars")
             except Exception as ocr_err:
