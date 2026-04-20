@@ -274,28 +274,37 @@ def _contar_campos(obj: Any) -> tuple[int, int]:
 def _detectar_max_numero_cargo(texto: str) -> int:
     """
     Encuentra el numero mas alto de la columna N° de tablas B.1/B.2 de personal.
-    Busca patrones donde un digito precede inmediatamente a un cargo tipico.
+    Busca patrones donde un digito precede (adyacente o en linea contigua) a un
+    cargo tipico, tolerando OCR fragmentado y palabras pegadas (GERENTEDE,
+    INGENIEROElectricista, etc.).
 
-    Uso: si el LLM extrajo N items pero aqui detectamos M>N, probablemente
-    salto algun cargo al final de la tabla — disparar retry.
+    Uso: si el LLM extrajo N items pero aqui detectamos M>N, disparar retry.
     """
+    # Palabras clave de cargos comunes en TDR peruano (tolera palabras pegadas
+    # y prefijos/sufijos). El .* al final permite matchear "GERENTEDE" como GERENTE.
+    _CARGO_KW = (
+        r"(?:ESPECIALISTA|GERENTE|JEFE|INGENIERO|SUPERVISOR|COORDINADOR|RESIDENTE|"
+        r"INSTALACIONES|SUPERVISI[OÓ]N|CAMPO|CONTROL|ARQUITECTURA|ESTRUCTURAS|"
+        r"COMUNICACIONES|EQUIPAMIENTO|SEGURIDAD|MEDIO|COSTOS|GEOTECNIA|BIM|"
+        r"ELECTROMEC|AMBIENTE|CALIDAD|METRADOS|VALORIZACIONES|HOSPITALARIO|"
+        r"SANITARIAS|ELECTRICAS|EL[EÉ]CTRICAS|MEC[AÁ]NICAS|CONTRATO)"
+    )
+
     nums: set[int] = set()
-    # Patron 1: dígito al inicio de línea o tras "|" seguido de un cargo en mayusculas.
-    # Tolerante a OCR fragmentado (el cargo puede estar en lineas sigs).
-    patrones = [
-        # "\n17 ESPECIALISTA" o "|17| ESPECIALISTA" o "17 INGENIERO"
-        r"(?:^|\n|\|)\s*(\d{1,2})\s+(?:ESPECIALISTA|GERENTE|JEFE|INGENIERO|SUPERVISOR|COORDINADOR|RESIDENTE)",
-        # "\n17\n INSTALACIONES" (cargo fragmentado en siguiente línea)
-        r"(?:^|\n)\s*(\d{1,2})\s*\n\s*(?:INSTALACIONES|SUPERVISI[OÓ]N|CAMPO|CONTROL|ARQUITECTURA|ESTRUCTURAS|COMUNICACIONES|EQUIPAMIENTO|SEGURIDAD|MEDIO|COSTOS|GEOTECNIA|BIM|ELECTROMEC)",
-    ]
-    for pat in patrones:
-        for m in re.finditer(pat, texto, re.IGNORECASE | re.MULTILINE):
-            try:
-                n = int(m.group(1))
-                if 1 <= n <= 30:  # rango razonable para TDRs
-                    nums.add(n)
-            except ValueError:
-                continue
+    # Patron unificado: digit al inicio de linea/celda + optional whitespace/newline
+    # + cualquiera de las keywords (en la misma linea, siguiente, o pegada).
+    # {0,3} lineas intermedias permite saltos de tabla con espacios.
+    patron = (
+        r"(?:^|\n|\|)\s*(\d{1,2})\s*[\n\s|]*"
+        rf"{_CARGO_KW}"
+    )
+    for m in re.finditer(patron, texto, re.IGNORECASE | re.MULTILINE):
+        try:
+            n = int(m.group(1))
+            if 1 <= n <= 30:
+                nums.add(n)
+        except ValueError:
+            continue
 
     return max(nums) if nums else 0
 
