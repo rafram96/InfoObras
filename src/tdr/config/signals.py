@@ -199,6 +199,19 @@ REGLA CRÍTICA:
 - Solo extrae información que REALMENTE aparece en el texto proporcionado.
 - Extrae TODOS los cargos que encuentres, no solo algunos.
 
+PROHIBIDO — PATRONES GENÉRICOS DE RELLENO:
+Si no hay datos claros en el texto, **responde con lista vacía**. NO generes ítems con
+profesiones genéricas como:
+  ["Ingeniero", "Supervisor", "Especialista", "Jefe", "Responsable"]
+ni con cargos_similares_validos iguales a esa misma lista. Ese patrón formulaico es
+alucinación — solo extrae las profesiones/cargos EXACTOS que aparecen en el texto.
+Si dudas entre "inventar algo razonable" o "dejar vacío", SIEMPRE elige dejar vacío.
+
+Una profesión aceptada válida es la palabra exacta después de "Título profesional:",
+"Profesión:", "Formación:" o columnas similares (ej: "Arquitecto", "Ingeniero Civil",
+"Ingeniero Electromecánico"). NUNCA genéricos como "Ingeniero" a secas cuando el texto
+dice "Ingeniero Civil".
+
 ADVERTENCIA — TABLAS OCR ENTRELAZADAS:
 El texto viene de OCR sobre PDF escaneado. Las tablas multi-columna aparecen con sus
 columnas ENTRELAZADAS, no fila por fila. Por ejemplo, para un cargo con 48 meses de
