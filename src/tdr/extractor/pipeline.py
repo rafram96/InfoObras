@@ -271,32 +271,25 @@ def _contar_campos(obj: Any) -> tuple[int, int]:
     return 1, (1 if es_nulo else 0)
 
 
-def _detectar_max_numero_cargo(texto: str) -> int:
-    """
-    Encuentra el numero mas alto de la columna N° de tablas B.1/B.2 de personal.
-    Busca patrones donde un digito precede (adyacente o en linea contigua) a un
-    cargo tipico, tolerando OCR fragmentado y palabras pegadas (GERENTEDE,
-    INGENIEROElectricista, etc.).
+_CARGO_KW_REGEX = (
+    r"(?:ESPECIALISTA|GERENTE|JEFE|INGENIERO|SUPERVISOR|COORDINADOR|RESIDENTE|"
+    r"INSTALACIONES|SUPERVISI[OÓ]N|CAMPO|CONTROL|ARQUITECTURA|ESTRUCTURAS|"
+    r"COMUNICACIONES|EQUIPAMIENTO|SEGURIDAD|MEDIO|COSTOS|GEOTECNIA|BIM|"
+    r"ELECTROMEC|AMBIENTE|CALIDAD|METRADOS|VALORIZACIONES|HOSPITALARIO|"
+    r"SANITARIAS|ELECTRICAS|EL[EÉ]CTRICAS|MEC[AÁ]NICAS|CONTRATO)"
+)
 
-    Uso: si el LLM extrajo N items pero aqui detectamos M>N, disparar retry.
-    """
-    # Palabras clave de cargos comunes en TDR peruano (tolera palabras pegadas
-    # y prefijos/sufijos). El .* al final permite matchear "GERENTEDE" como GERENTE.
-    _CARGO_KW = (
-        r"(?:ESPECIALISTA|GERENTE|JEFE|INGENIERO|SUPERVISOR|COORDINADOR|RESIDENTE|"
-        r"INSTALACIONES|SUPERVISI[OÓ]N|CAMPO|CONTROL|ARQUITECTURA|ESTRUCTURAS|"
-        r"COMUNICACIONES|EQUIPAMIENTO|SEGURIDAD|MEDIO|COSTOS|GEOTECNIA|BIM|"
-        r"ELECTROMEC|AMBIENTE|CALIDAD|METRADOS|VALORIZACIONES|HOSPITALARIO|"
-        r"SANITARIAS|ELECTRICAS|EL[EÉ]CTRICAS|MEC[AÁ]NICAS|CONTRATO)"
-    )
 
+def _detectar_numeros_cargo(texto: str) -> set[int]:
+    """
+    Encuentra TODOS los numeros asociados a cargos de personal clave en el texto.
+    Retorna el set de numeros detectados (ej: {1, 2, 3, ..., 17}).
+    Uso: comparar contra los items extraidos para saber cuales N° faltan.
+    """
     nums: set[int] = set()
-    # Patron unificado: digit al inicio de linea/celda + optional whitespace/newline
-    # + cualquiera de las keywords (en la misma linea, siguiente, o pegada).
-    # {0,3} lineas intermedias permite saltos de tabla con espacios.
     patron = (
         r"(?:^|\n|\|)\s*(\d{1,2})\s*[\n\s|]*"
-        rf"{_CARGO_KW}"
+        rf"{_CARGO_KW_REGEX}"
     )
     for m in re.finditer(patron, texto, re.IGNORECASE | re.MULTILINE):
         try:
@@ -305,8 +298,53 @@ def _detectar_max_numero_cargo(texto: str) -> int:
                 nums.add(n)
         except ValueError:
             continue
+    return nums
 
+
+def _detectar_max_numero_cargo(texto: str) -> int:
+    """Alias retrocompatible: retorna solo el maximo detectado."""
+    nums = _detectar_numeros_cargo(texto)
     return max(nums) if nums else 0
+
+
+def _numeros_faltantes(texto: str, items_extraidos: list[dict]) -> list[int]:
+    """
+    Compara numeros detectados en el texto con los que el LLM efectivamente
+    extrajo. Retorna los numeros que parecen faltar.
+
+    Heuristica: mapea cada item extraido a un numero buscando sus keywords de
+    cargo en el texto cerca de un numero de fila.
+    """
+    nums_texto = _detectar_numeros_cargo(texto)
+    if not nums_texto:
+        return []
+
+    nums_cubiertos: set[int] = set()
+    for item in items_extraidos:
+        cargo = (item.get("cargo") or "").strip()
+        if not cargo:
+            continue
+        # Extraer la palabra distintiva del cargo (ej: "ARQUITECTURA", "BIM",
+        # "ELECTROMECANICAS", "CAMPO"). Es la ultima palabra significativa.
+        palabras = re.findall(r"\b[A-ZÁÉÍÓÚÑ]{4,}\b", cargo.upper())
+        if not palabras:
+            continue
+        # Buscar en el texto un digito cerca de esa palabra distintiva
+        for palabra in palabras[-2:]:  # ultimas 2 palabras distintivas
+            # Patron: digit (antes o despues) cerca de la palabra
+            for m in re.finditer(
+                rf"(\d{{1,2}})[\s\n\|]{{0,30}}{re.escape(palabra)}|{re.escape(palabra)}[\s\n\|]{{0,30}}(\d{{1,2}})",
+                texto, re.IGNORECASE,
+            ):
+                try:
+                    n = int(m.group(1) or m.group(2))
+                    if 1 <= n <= 30 and n in nums_texto:
+                        nums_cubiertos.add(n)
+                except (ValueError, TypeError):
+                    continue
+
+    faltantes = sorted(nums_texto - nums_cubiertos)
+    return faltantes
 
 
 _PREFIJOS_CARGO = (
@@ -1302,23 +1340,21 @@ def extraer_bases(
                     for item in items:
                         item["_vl_source"] = True
 
-                # Retry si detectamos que el LLM omitio cargos. Buscamos el N maximo
-                # en el FULL TEXT del documento — no solo en el sub-bloque. Asi
-                # captamos cargos (#1, #2, #3) que pudieron quedar en pag 2 si el
-                # scorer la clasifico como rtm_postor. El retry tambien recibe el
-                # full_text para tener acceso a esas paginas perdidas.
+                # Retry con numeros faltantes especificos. Detecta que N° aparecen
+                # en el FULL TEXT pero no fueron cubiertos por los items extraidos.
+                nums_faltantes = _numeros_faltantes(full_text, items)
                 n_esperados = _detectar_max_numero_cargo(full_text)
-                if n_esperados > len(items):
+                if nums_faltantes:
                     logger.warning(
-                        "[pipeline] LLM extrajo %d cargos pero full_text tiene N max = %d. "
-                        "Disparando retry automatico (usando texto completo para "
-                        "capturar cargos en paginas clasificadas como rtm_postor).",
-                        len(items), n_esperados,
+                        "[pipeline] LLM extrajo %d cargos pero faltan numeros "
+                        "especificos: %s (N max detectado: %d). Disparando retry.",
+                        len(items), nums_faltantes, n_esperados,
                     )
                     try:
                         from src.tdr.extractor.llm import retry_cargos_faltantes
                         items_nuevos = retry_cargos_faltantes(
                             full_text, items, n_esperados,
+                            numeros_faltantes=nums_faltantes,
                         )
                         if items_nuevos:
                             items = items + items_nuevos

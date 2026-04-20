@@ -229,7 +229,7 @@ def _guardar_raw_error(
         return None
 
 
-_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de la tabla de personal clave (B.1 + B.2) pero la tabla tiene {n_esperados} filas numeradas. Faltan aproximadamente {n_faltantes} cargos.
+_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de la tabla de personal clave (B.1 + B.2) pero la tabla tiene {n_esperados} filas numeradas. {mencion_numeros}
 
 CARGOS YA EXTRAIDOS (no los repitas — busca SOLO los que NO estan en esta lista):
 {cargos_extraidos}
@@ -278,12 +278,13 @@ def retry_cargos_faltantes(
     texto_fuente: str,
     items_ya_extraidos: list,
     n_esperados: int,
+    numeros_faltantes: Optional[list[int]] = None,
 ) -> list:
     """
     Invoca a Qwen con un prompt especializado pidiendo SOLO los cargos que el
-    LLM omitio en la primera pasada. El modelo ya tiene el contexto y puede
-    enfocarse en los faltantes (tipicamente los ultimos items que tienen OCR
-    fragmentado).
+    LLM omitio en la primera pasada. Si se pasa `numeros_faltantes`, el prompt
+    menciona EXPLICITAMENTE cuales N° deben extraerse (mucho mas preciso que
+    solo decir "faltan N").
 
     Retorna lista de items nuevos (sin mezclar con los originales — el caller
     debe concatenar).
@@ -291,13 +292,24 @@ def retry_cargos_faltantes(
     cargos_extraidos = [str(it.get("cargo", "?")) for it in items_ya_extraidos]
     n_extraidos = len(cargos_extraidos)
     n_faltantes = max(0, n_esperados - n_extraidos)
-    if n_faltantes <= 0:
+    if numeros_faltantes is None and n_faltantes <= 0:
         return []
+    if numeros_faltantes is not None and not numeros_faltantes:
+        return []
+
+    if numeros_faltantes:
+        mencion_numeros = (
+            f"FALTAN ESPECIFICAMENTE los cargos N° {', '.join(f'#{n}' for n in numeros_faltantes)}. "
+            f"Busca en el texto las filas con esos numeros y extrae SOLO esos cargos."
+        )
+    else:
+        mencion_numeros = f"Faltan aproximadamente {n_faltantes} cargos."
 
     prompt = _PROMPT_RETRY_FALTANTES.format(
         n_extraidos=n_extraidos,
         n_esperados=n_esperados,
         n_faltantes=n_faltantes,
+        mencion_numeros=mencion_numeros,
         cargos_extraidos="\n".join(f"- {c}" for c in cargos_extraidos),
         texto=texto_fuente[:QWEN_NUM_CTX * 3],  # cap conservador
     )
