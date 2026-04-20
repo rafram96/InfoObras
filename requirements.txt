@@ -10,9 +10,11 @@ psycopg2-binary>=2.9
 openai>=1.0              # cliente compatible con Ollama API
 pdfplumber>=0.11         # extracción de texto de PDFs digitales
 Pillow>=10.0             # manipulación de imágenes para Qwen VL
+PyMuPDF>=1.24            # fitz: render de páginas PDF → imagen para qwen_vl_worker
 
 # ── Extracción: profesionales y experiencias (Pasos 2-3) ────────────────────
 requests>=2.31           # llamadas HTTP a Ollama + scraping
+json-repair>=0.30        # reparación agresiva de JSON malformado del LLM
 
 # ── Reporting ────────────────────────────────────────────────────────────────
 openpyxl>=3.1            # generación de Excel
