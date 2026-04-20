@@ -24,12 +24,16 @@ def _comprimir_tabla_vl(text: str, max_chars: int = 4000) -> str:
     """
     Comprime tablas markdown grandes generadas por Qwen VL.
 
-    Qwen VL a veces genera dos tablas en una misma página:
-      1. Tabla resumen (B.1): Item | Cargo | Profesión | Cant. — celdas cortas, útil
-      2. Tabla de descripciones: Cargo | Descripción de actividades — celdas de 500+ chars
+    Qwen VL a veces genera dos tipos de filas en una página:
+      1. Filas de tablas útiles (B.1/B.2): 3-4+ columnas con datos estructurados.
+         En B.2 la columna "TRABAJOS O PRESTACIONES" puede tener 500-700 chars
+         listando cargos similares válidos — contenido CRÍTICO, no descarte.
+      2. Filas de "descripción de actividades": 2-3 columnas donde una celda tiene
+         1000+ chars de narrativa libre.
 
-    Estrategia: eliminar filas donde ALGUNA celda excede 200 chars
-    (son filas de descripción de actividades, no de requisitos).
+    Estrategia: eliminar una fila SOLO si tiene celda > _MAX_CELDA_GRANDE chars Y
+    la fila tiene pocas columnas no-vacías (<=3). Si tiene 4+ columnas es tabla
+    legítima aunque alguna celda sea larga.
     """
     if len(text) <= max_chars:
         return text
@@ -40,7 +44,11 @@ def _comprimir_tabla_vl(text: str, max_chars: int = 4000) -> str:
     if len(lineas_tabla) < 3:
         return text  # No es una tabla significativa
 
-    _MAX_CELDA = 200  # celdas de resumen son <100 chars, descripciones >500
+    # Umbral: las celdas de B.2 (cargos similares) llegan a ~700 chars; las
+    # descripciones narrativas de Qwen VL suelen ser 1000+. 800 separa bien.
+    _MAX_CELDA_GRANDE = 800
+    # Guardia: solo eliminar si la fila es angosta (2-3 columnas significativas)
+    _MAX_COLS_PARA_DESCARTE = 3
 
     resultado = []
     filas_eliminadas = 0
@@ -50,12 +58,24 @@ def _comprimir_tabla_vl(text: str, max_chars: int = 4000) -> str:
             resultado.append(linea)
             continue
 
-        celdas = [c.strip() for c in linea.split("|")]
+        celdas_raw = linea.split("|")
+        # Remover primera y ultima celda si son vacias (bordes del markdown |...|)
+        celdas = [c.strip() for c in celdas_raw]
+        # Celdas no-vacias ni de separador ---
+        celdas_significativas = [
+            c for c in celdas
+            if c and not set(c.replace(" ", "")) <= {"-", ":"}
+        ]
         max_celda = max((len(c) for c in celdas), default=0)
 
-        if max_celda > _MAX_CELDA:
+        # Descartar solo si: celda MUY grande Y pocas columnas significativas
+        # (tipico de descripcion pura de actividades, no B.1/B.2 legitima)
+        if (
+            max_celda > _MAX_CELDA_GRANDE
+            and len(celdas_significativas) <= _MAX_COLS_PARA_DESCARTE
+        ):
             filas_eliminadas += 1
-            continue  # Saltar filas con descripciones enormes
+            continue
 
         resultado.append(linea)
 
@@ -255,10 +275,16 @@ def _normalizar_para_fuzzy(texto: str) -> str:
     return re.sub(r"[^a-z0-9\s]", " ", txt)
 
 
-def _cargo_aparece_en_texto(cargo: str, texto_fuente: str, min_ratio: float = 80) -> bool:
+def _cargo_aparece_en_texto(cargo: str, texto_fuente: str, min_ratio: float = 75) -> bool:
     """
     Verifica que `cargo` aparezca (aproximadamente) en `texto_fuente`.
-    Usa substring case-insensitive primero; si no, fuzzy con RapidFuzz.
+    Usa substring case-insensitive primero. Si falla, usa fuzzy con RapidFuzz
+    DESLIZANDO una ventana del mismo tamaño del cargo sobre el texto:
+    calcula partial_ratio con una porcion del texto fuente del mismo tamaño
+    para cada posicion razonable. Esto evita que "ESPECIALISTA EN EDIFICACIONES"
+    sea aceptado solo porque "edificaciones" aparece aislado en "edificaciones
+    y afines".
+
     Retorna False si el cargo no tiene evidencia en la fuente — probable alucinacion.
     """
     if not cargo or not texto_fuente:
@@ -273,15 +299,30 @@ def _cargo_aparece_en_texto(cargo: str, texto_fuente: str, min_ratio: float = 80
     if cargo_norm in texto_norm:
         return True
 
-    # 2. Fuzzy partial_ratio: busca el cargo como subsecuencia aproximada
+    # 2. Verificar que TODOS los tokens significativos del cargo (>=4 chars)
+    #    aparezcan en el texto. "ESPECIALISTA EN EDIFICACIONES" requiere que
+    #    tanto "especialista" como "edificaciones" esten; no basta solo con
+    #    "edificaciones".
+    tokens_cargo = [
+        t for t in re.split(r"\s+", cargo_norm)
+        if len(t) >= 4 and t not in ("para", "como", "segun")
+    ]
+    if tokens_cargo:
+        tokens_faltantes = [t for t in tokens_cargo if t not in texto_norm]
+        # Permitir hasta 1 token faltante si el cargo es largo (tipos/accents)
+        tolerancia = 1 if len(tokens_cargo) >= 3 else 0
+        if len(tokens_faltantes) > tolerancia:
+            return False
+
+    # 3. Fuzzy adicional para casos con OCR/acentos: token_set_ratio
     try:
         from rapidfuzz import fuzz
-        score = fuzz.partial_ratio(cargo_norm, texto_norm)
+        # token_set_ratio: compara tokens como conjunto, tolerante a orden
+        # pero requiere que la mayoria de tokens del cargo esten presentes
+        score = fuzz.token_set_ratio(cargo_norm, texto_norm)
         return score >= min_ratio
     except ImportError:
-        # Sin rapidfuzz, fallback conservador: si substring fallo, aceptar igual
-        # (evitar falsos positivos en ausencia de fuzzy)
-        return True
+        return True  # sin rapidfuzz, aceptar si tokens_cargo paso
 
 
 def _marcar_cargos_no_en_fuente(
@@ -327,19 +368,22 @@ def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
     for firma, indices in firmas.items():
         if len(indices) < 2:
             continue
-        # Patron sospechoso: multiples items con firma identica
+        # Patron sospechoso: multiples items con firma identica.
+        # El CARGO puede ser real pero las profesiones/cargos_similares_validos
+        # fueron resumidos formulaicamente por el LLM.
         profs, cargos_sim = firma
         for idx in indices:
             item = items[idx]
             if not item.get("_needs_review"):
                 item["_needs_review"] = True
                 item["_review_reason"] = (
-                    f"Item comparte profesiones_aceptadas y cargos_similares_validos "
-                    f"identicos con otros {len(indices)-1} items — posible copy-paste "
-                    f"fabricado por el LLM."
+                    f"Profesiones aceptadas y cargos similares identicos a otros "
+                    f"{len(indices)-1} cargos (patron formulaico). El cargo puede ser "
+                    f"real pero sus metadatos probablemente son un resumen vago del "
+                    f"LLM — verificar contra el texto fuente."
                 )
         logger.warning(
-            "[validador] Detectado patron copy-paste: %d items con firma "
+            "[validador] Detectado patron repetitivo: %d items con firma "
             "profesiones=%s cargos_sim=%s — marcados _needs_review",
             len(indices), list(profs), list(cargos_sim),
         )
