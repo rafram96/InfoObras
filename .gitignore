@@ -28,3 +28,6 @@ docs/desarrollo
 utils/**/*.html
 claude_god/
 *.html
+
+# Crashdumps de Git Bash / Cygwin en Windows
+*.stackdump
