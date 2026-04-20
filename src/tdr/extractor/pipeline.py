@@ -247,6 +247,105 @@ def _contar_campos(obj: Any) -> tuple[int, int]:
     return 1, (1 if es_nulo else 0)
 
 
+def _normalizar_para_fuzzy(texto: str) -> str:
+    """Normaliza texto para comparacion fuzzy: minusculas, sin tildes, sin signos."""
+    import unicodedata
+    txt = unicodedata.normalize("NFD", texto.lower())
+    txt = "".join(c for c in txt if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9\s]", " ", txt)
+
+
+def _cargo_aparece_en_texto(cargo: str, texto_fuente: str, min_ratio: float = 80) -> bool:
+    """
+    Verifica que `cargo` aparezca (aproximadamente) en `texto_fuente`.
+    Usa substring case-insensitive primero; si no, fuzzy con RapidFuzz.
+    Retorna False si el cargo no tiene evidencia en la fuente — probable alucinacion.
+    """
+    if not cargo or not texto_fuente:
+        return True  # no filtrar si falta info
+
+    cargo_norm = _normalizar_para_fuzzy(cargo).strip()
+    texto_norm = _normalizar_para_fuzzy(texto_fuente)
+
+    if not cargo_norm:
+        return True
+    # 1. Substring directo (caso normal)
+    if cargo_norm in texto_norm:
+        return True
+
+    # 2. Fuzzy partial_ratio: busca el cargo como subsecuencia aproximada
+    try:
+        from rapidfuzz import fuzz
+        score = fuzz.partial_ratio(cargo_norm, texto_norm)
+        return score >= min_ratio
+    except ImportError:
+        # Sin rapidfuzz, fallback conservador: si substring fallo, aceptar igual
+        # (evitar falsos positivos en ausencia de fuzzy)
+        return True
+
+
+def _marcar_cargos_no_en_fuente(
+    items: list[dict],
+    texto_fuente: str,
+    page_range: tuple,
+) -> list[dict]:
+    """
+    Marca con _needs_review=True los items cuyo cargo no aparece en el texto fuente.
+    No elimina — deja que el evaluador humano decida.
+    """
+    for item in items:
+        cargo = item.get("cargo") or ""
+        if not _cargo_aparece_en_texto(cargo, texto_fuente):
+            item["_needs_review"] = True
+            item["_review_reason"] = (
+                f"Cargo '{cargo}' no aparece en texto fuente (pags {page_range}). "
+                f"Posible alucinacion del LLM."
+            )
+            logger.warning(
+                "[validador] Cargo '%s' (pags %s) no esta en la fuente — marcado _needs_review",
+                cargo, page_range,
+            )
+    return items
+
+
+def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
+    """
+    Detecta items que son copy-paste formulaico del LLM (patron tipico de alucinacion).
+    Si >=2 items comparten EXACTAMENTE las mismas profesiones_aceptadas y
+    cargos_similares_validos, probablemente son fabricados — marca _needs_review.
+    """
+    # Agrupar por firma (profesiones + cargos_similares)
+    firmas: dict[tuple, list[int]] = {}
+    for idx, item in enumerate(items):
+        profs = tuple(sorted(item.get("profesiones_aceptadas") or []))
+        exp = item.get("experiencia_minima") or {}
+        cargos_sim = tuple(sorted(exp.get("cargos_similares_validos") or []))
+        firma = (profs, cargos_sim)
+        if profs or cargos_sim:  # ignorar firmas vacias
+            firmas.setdefault(firma, []).append(idx)
+
+    for firma, indices in firmas.items():
+        if len(indices) < 2:
+            continue
+        # Patron sospechoso: multiples items con firma identica
+        profs, cargos_sim = firma
+        for idx in indices:
+            item = items[idx]
+            if not item.get("_needs_review"):
+                item["_needs_review"] = True
+                item["_review_reason"] = (
+                    f"Item comparte profesiones_aceptadas y cargos_similares_validos "
+                    f"identicos con otros {len(indices)-1} items — posible copy-paste "
+                    f"fabricado por el LLM."
+                )
+        logger.warning(
+            "[validador] Detectado patron copy-paste: %d items con firma "
+            "profesiones=%s cargos_sim=%s — marcados _needs_review",
+            len(indices), list(profs), list(cargos_sim),
+        )
+    return items
+
+
 def _filtrar_registros_vacios(
     lista: list[dict],
     nombre_seccion: str,
@@ -1034,11 +1133,22 @@ def extraer_bases(
                 if es_sub_vl:
                     for item in items:
                         item["_vl_source"] = True
+                # Verificar que cada cargo extraido aparezca en el texto fuente
+                # del sub-bloque. Marca _needs_review si no — probable alucinacion.
+                items = _marcar_cargos_no_en_fuente(
+                    items, sub_block.text, sub_block.page_range,
+                )
                 resultado["rtm_personal"].extend(items)
             elif block.block_type == "factores_evaluacion":
                 resultado["factores_evaluacion"].extend(data.get("factores_evaluacion", []))
             elif block.block_type == "capacitacion":
                 _capacitaciones_raw.extend(data.get("capacitaciones", []))
+
+    # Detectar items con firma copy-paste identica (sintoma de alucinacion LLM).
+    # No se descartan — se marcan _needs_review para revision manual.
+    resultado["rtm_personal"] = _detectar_copy_paste_fabricacion(
+        resultado["rtm_personal"],
+    )
 
     # Post-proceso: deduplicar personal y limpiar entradas vacías
     resultado["rtm_personal"] = _dedup_personal(resultado["rtm_personal"])
