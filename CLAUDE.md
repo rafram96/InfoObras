@@ -249,6 +249,36 @@ uvicorn src.api.main:app --reload --port 8000
 pytest
 ```
 
+## Retención de PDFs y re-run (agregado 2026-04-19)
+
+Los PDFs subidos se persisten en `UPLOADS_DIR/{job_id}/` y **no se borran** al terminar el job. Esto habilita el re-run retroactivo de jobs pasados con el pipeline actual (útil cuando mejora un engine o prompts).
+
+- `create_job` guarda `pdf_path` y `bases_path` en la tabla `jobs`.
+- Los runners (`_run_job`, `_run_full_job`, `_run_tdr_job`) ya no hacen `unlink` del PDF al terminar.
+- `DELETE /api/jobs/:id` elimina el directorio `UPLOADS_DIR/{job_id}/` además del `OUTPUT_DIR/{job_id}/`.
+
+### Endpoint de re-run
+`POST /api/jobs/:id/rerun` (form field `force_motor_ocr: bool`)
+- Valida que `pdf_path` exista en disco
+- Clona: crea `new_id`, copia el PDF a `UPLOADS_DIR/{new_id}/` (aislado), INSERT con `source_job_id` apuntando al original
+- Invoca el runner correspondiente (`_run_job`, `_run_full_job` o `_run_tdr_job`)
+- Respuesta: `{id, source_job_id, status, job_type}`
+
+### Columnas agregadas a `jobs`
+- `pdf_path TEXT` — ruta absoluta al PDF preservado
+- `bases_path TEXT` — ruta absoluta al PDF de bases (solo job_type=full)
+- `source_job_id TEXT` — id del job original si este es un re-run
+
+### Frontend: botón "Re-correr"
+- `/historial`: icono `restart_alt` por fila, habilitado solo si `pdf_available=true` — abre modal con toggle `force_motor_ocr`
+- `/jobs/[id]`: botón "Re-correr" en el header (done/error + pdf_available) + banner "Re-run del job X" si `source_job_id` existe
+
+### Deuda técnica — política de limpieza
+Actualmente los PDFs se retienen **indefinidamente**. Con el SSD 3TB del servidor y ~200 MB por propuesta típica, no es urgente. Cuando escale (~100+ jobs), implementar:
+- Borrado automático de jobs >N días (env `PDF_RETENTION_DAYS`)
+- Comando CLI manual para reclamar espacio
+- Regla: nunca borrar un PDF que sea `source_job_id` de otro job activo (pero como hacemos copy-on-rerun, no aplica hoy)
+
 ## Fast-path pdfplumber (agregado 2026-04-19)
 
 Antes de llamar al wrapper motor-OCR, `_run_job` en `src/api/main.py` decide qué mode invocar:

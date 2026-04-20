@@ -145,7 +145,10 @@ def _init_db() -> None:
                     progress_pct    INTEGER DEFAULT 0,
                     progress_stage  TEXT,
                     doc_total_pages INTEGER,
-                    logs            TEXT
+                    logs            TEXT,
+                    pdf_path        TEXT,
+                    bases_path      TEXT,
+                    source_job_id   TEXT
                 )
             """)
             # Migraciones: agregar columnas si la tabla ya existe sin ellas
@@ -153,6 +156,9 @@ def _init_db() -> None:
                 ("job_type", "TEXT NOT NULL DEFAULT 'extraction'"),
                 ("started_at", "TIMESTAMPTZ"),
                 ("logs", "TEXT"),
+                ("pdf_path", "TEXT"),
+                ("bases_path", "TEXT"),
+                ("source_job_id", "TEXT"),
             ]:
                 cur.execute(f"""
                     DO $$
@@ -603,8 +609,8 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr
             job_id, status="error", progress_pct=0, progress_stage=None,
             error=str(e),
         )
-    finally:
-        pdf_path.unlink(missing_ok=True)
+    # PDF se conserva en UPLOADS_DIR/{job_id}/ para habilitar re-run retroactivo.
+    # Se borra al eliminar el job via DELETE /api/jobs/:id.
 
 
 # ── TDR Job runner ─────────────────────────────────────────────────────────
@@ -706,8 +712,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
             job_id, status="error", progress_pct=0, progress_stage=None,
             error=str(e),
         )
-    finally:
-        pdf_path.unlink(missing_ok=True)
+    # PDF se conserva en UPLOADS_DIR/{job_id}/ para re-run retroactivo.
 
 
 # ── Full Pipeline Job runner ───────────────────────────────────────────────
@@ -954,10 +959,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         logger.exception("Job %s (full): error", job_id)
         _append_job_log(job_id, f"ERROR: {e}")
         _update_job(job_id, status="error", progress_pct=0, progress_stage=None, error=str(e))
-    finally:
-        pdf_path.unlink(missing_ok=True)
-        if bases_path:
-            bases_path.unlink(missing_ok=True)
+    # PDFs (propuesta + bases) se conservan en UPLOADS_DIR/{job_id}/ para re-run retroactivo.
 
 
 # ── Routes: Jobs (OCR + pipeline) ───────────────────────────────────────────
@@ -995,20 +997,32 @@ async def create_job(
         pages = None
 
     job_id = uuid.uuid4().hex[:8]
-    pdf_path = UPLOADS_DIR / f"{job_id}_{file.filename}"
+    # Persistencia de PDFs: cada job tiene su propio directorio en UPLOADS_DIR/{job_id}/
+    # Los PDFs se conservan despues del procesamiento para habilitar re-run retroactivo.
+    job_uploads = UPLOADS_DIR / job_id
+    job_uploads.mkdir(parents=True, exist_ok=True)
+    pdf_path = job_uploads / file.filename
     pdf_path.write_bytes(await file.read())
 
     bases_path = None
     if bases_file:
-        bases_path = UPLOADS_DIR / f"{job_id}_bases_{bases_file.filename}"
+        bases_path = job_uploads / f"bases_{bases_file.filename}"
         bases_path.write_bytes(await bases_file.read())
 
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO jobs (id, filename, job_type, pages_from, pages_to) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (job_id, file.filename, job_type, pages_from, pages_to),
+                "INSERT INTO jobs (id, filename, job_type, pages_from, pages_to, pdf_path, bases_path) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    job_id,
+                    file.filename,
+                    job_type,
+                    pages_from,
+                    pages_to,
+                    str(pdf_path),
+                    str(bases_path) if bases_path else None,
+                ),
             )
 
     # Bifurcar según tipo de job
@@ -1022,13 +1036,23 @@ async def create_job(
     return {"id": job_id, "status": "pending", "job_type": job_type}
 
 
+def _pdf_available(pdf_path: Optional[str]) -> bool:
+    """Retorna True si pdf_path es un path valido y el archivo existe en disco."""
+    if not pdf_path:
+        return False
+    try:
+        return Path(pdf_path).exists()
+    except Exception:
+        return False
+
+
 @app.get("/api/jobs", tags=["Jobs"])
 async def list_jobs():
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, filename, job_type, pages_from, pages_to, status, "
-                "created_at, progress_pct, "
+                "created_at, progress_pct, pdf_path, source_job_id, "
                 "CASE "
                 "  WHEN job_type = 'tdr' THEN (result->>'total_cargos')::int "
                 "  ELSE jsonb_array_length(COALESCE(result->'secciones', '[]'::jsonb)) "
@@ -1047,6 +1071,8 @@ async def list_jobs():
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "progress_pct": r["progress_pct"] or 0,
             "profesionales_count": r.get("profesionales_count"),
+            "source_job_id": r.get("source_job_id"),
+            "pdf_available": _pdf_available(r.get("pdf_path")),
         }
         for r in rows
     ]
@@ -1059,7 +1085,7 @@ async def get_job(job_id: str):
             cur.execute(
                 "SELECT id, filename, job_type, pages_from, pages_to, status, "
                 "created_at, started_at, result, error, progress_pct, "
-                "progress_stage, doc_total_pages, logs "
+                "progress_stage, doc_total_pages, logs, pdf_path, bases_path, source_job_id "
                 "FROM jobs WHERE id = %s",
                 (job_id,),
             )
@@ -1085,6 +1111,101 @@ async def get_job(job_id: str):
         "progress_stage": row["progress_stage"],
         "doc_total_pages": row["doc_total_pages"],
         "logs": row.get("logs"),
+        "source_job_id": row.get("source_job_id"),
+        "pdf_available": _pdf_available(row.get("pdf_path")),
+        "bases_available": _pdf_available(row.get("bases_path")),
+    }
+
+
+@app.post("/api/jobs/{job_id}/rerun", status_code=201, tags=["Jobs"])
+async def rerun_job(
+    job_id: str,
+    force_motor_ocr: bool = Form(False),
+):
+    """
+    Clona un job existente y lo re-ejecuta con el PDF original preservado.
+    Crea un nuevo job_id con source_job_id apuntando al original.
+    Copia el PDF a UPLOADS_DIR/{new_id}/ para aislar el nuevo job.
+    """
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, filename, job_type, pages_from, pages_to, pdf_path, bases_path "
+                "FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(404, "Job no encontrado")
+    if not row.get("pdf_path"):
+        raise HTTPException(
+            400,
+            "Este job no tiene PDF preservado (procesado antes de la retención de PDFs, o borrado manualmente). No se puede re-correr.",
+        )
+
+    src_pdf = Path(row["pdf_path"])
+    if not src_pdf.exists():
+        raise HTTPException(400, "El PDF original ya no existe en disco.")
+
+    job_type = row["job_type"]
+    src_bases = None
+    if job_type == "full":
+        if not row.get("bases_path"):
+            raise HTTPException(400, "Job pipeline completo pero sin bases_path registradas.")
+        src_bases = Path(row["bases_path"])
+        if not src_bases.exists():
+            raise HTTPException(400, "El PDF de bases original ya no existe en disco.")
+
+    # Crear nuevo job y copiar archivos
+    new_id = uuid.uuid4().hex[:8]
+    new_uploads = UPLOADS_DIR / new_id
+    new_uploads.mkdir(parents=True, exist_ok=True)
+    new_pdf = new_uploads / src_pdf.name
+    shutil.copy2(src_pdf, new_pdf)
+    new_bases: Optional[Path] = None
+    if src_bases:
+        new_bases = new_uploads / src_bases.name
+        shutil.copy2(src_bases, new_bases)
+
+    pages: Optional[list] = None
+    if row["pages_from"] is not None and row["pages_to"] is not None:
+        pages = list(range(row["pages_from"], row["pages_to"] + 1))
+    elif row["pages_from"] is not None:
+        pages = [row["pages_from"]]
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO jobs (id, filename, job_type, pages_from, pages_to, "
+                "pdf_path, bases_path, source_job_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    new_id,
+                    row["filename"],
+                    job_type,
+                    row["pages_from"],
+                    row["pages_to"],
+                    str(new_pdf),
+                    str(new_bases) if new_bases else None,
+                    job_id,
+                ),
+            )
+
+    _append_job_log(new_id, f"Re-run de job {job_id} (force_motor_ocr={force_motor_ocr})")
+
+    if job_type == "tdr":
+        _executor.submit(_run_tdr_job, new_id, new_pdf)
+    elif job_type == "full":
+        _executor.submit(_run_full_job, new_id, new_pdf, new_bases, pages, force_motor_ocr)
+    else:
+        _executor.submit(_run_job, new_id, new_pdf, pages, force_motor_ocr)
+
+    return {
+        "id": new_id,
+        "source_job_id": job_id,
+        "status": "pending",
+        "job_type": job_type,
     }
 
 
@@ -1429,9 +1550,13 @@ async def delete_job(job_id: str):
                 _cancelled_jobs.add(job_id)
                 logger.info("Job %s: marcado como cancelado", job_id)
             cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
-    job_dir = OUTPUT_DIR / job_id
-    if job_dir.exists():
-        shutil.rmtree(job_dir, ignore_errors=True)
+    # Limpiar artefactos en disco: .md del OCR y PDFs preservados
+    output_dir = OUTPUT_DIR / job_id
+    if output_dir.exists():
+        shutil.rmtree(output_dir, ignore_errors=True)
+    uploads_dir = UPLOADS_DIR / job_id
+    if uploads_dir.exists():
+        shutil.rmtree(uploads_dir, ignore_errors=True)
     return {"ok": True}
 
 
