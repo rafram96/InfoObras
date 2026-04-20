@@ -271,6 +271,35 @@ def _contar_campos(obj: Any) -> tuple[int, int]:
     return 1, (1 if es_nulo else 0)
 
 
+def _detectar_max_numero_cargo(texto: str) -> int:
+    """
+    Encuentra el numero mas alto de la columna N° de tablas B.1/B.2 de personal.
+    Busca patrones donde un digito precede inmediatamente a un cargo tipico.
+
+    Uso: si el LLM extrajo N items pero aqui detectamos M>N, probablemente
+    salto algun cargo al final de la tabla — disparar retry.
+    """
+    nums: set[int] = set()
+    # Patron 1: dígito al inicio de línea o tras "|" seguido de un cargo en mayusculas.
+    # Tolerante a OCR fragmentado (el cargo puede estar en lineas sigs).
+    patrones = [
+        # "\n17 ESPECIALISTA" o "|17| ESPECIALISTA" o "17 INGENIERO"
+        r"(?:^|\n|\|)\s*(\d{1,2})\s+(?:ESPECIALISTA|GERENTE|JEFE|INGENIERO|SUPERVISOR|COORDINADOR|RESIDENTE)",
+        # "\n17\n INSTALACIONES" (cargo fragmentado en siguiente línea)
+        r"(?:^|\n)\s*(\d{1,2})\s*\n\s*(?:INSTALACIONES|SUPERVISI[OÓ]N|CAMPO|CONTROL|ARQUITECTURA|ESTRUCTURAS|COMUNICACIONES|EQUIPAMIENTO|SEGURIDAD|MEDIO|COSTOS|GEOTECNIA|BIM|ELECTROMEC)",
+    ]
+    for pat in patrones:
+        for m in re.finditer(pat, texto, re.IGNORECASE | re.MULTILINE):
+            try:
+                n = int(m.group(1))
+                if 1 <= n <= 30:  # rango razonable para TDRs
+                    nums.add(n)
+            except ValueError:
+                continue
+
+    return max(nums) if nums else 0
+
+
 def _normalizar_para_fuzzy(texto: str) -> str:
     """Normaliza texto para comparacion fuzzy: minusculas, sin tildes, sin signos."""
     import unicodedata
@@ -1181,6 +1210,31 @@ def extraer_bases(
                 if es_sub_vl:
                     for item in items:
                         item["_vl_source"] = True
+
+                # Retry si detectamos que el LLM omitio cargos al final de la tabla.
+                # Busca el numero max en la columna N° del texto fuente; si >len(items),
+                # re-invoca al LLM pidiendo SOLO los faltantes.
+                n_esperados = _detectar_max_numero_cargo(sub_block.text)
+                if n_esperados > len(items) + 0:
+                    logger.warning(
+                        "[pipeline] LLM extrajo %d cargos pero texto tiene N max = %d. "
+                        "Disparando retry automatico para recuperar faltantes.",
+                        len(items), n_esperados,
+                    )
+                    try:
+                        from src.tdr.extractor.llm import retry_cargos_faltantes
+                        items_nuevos = retry_cargos_faltantes(
+                            sub_block.text, items, n_esperados,
+                        )
+                        if items_nuevos:
+                            items = items + items_nuevos
+                            logger.info(
+                                "[pipeline] Retry recupero %d cargo(s) → total %d",
+                                len(items_nuevos), len(items),
+                            )
+                    except Exception as e:
+                        logger.warning("[pipeline] Retry fallo: %s", e)
+
                 # Verificar que cada cargo extraido aparezca en el texto fuente
                 # del sub-bloque. Marca _needs_review si no — probable alucinacion.
                 items = _marcar_cargos_no_en_fuente(

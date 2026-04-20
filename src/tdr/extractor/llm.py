@@ -229,6 +229,115 @@ def _guardar_raw_error(
         return None
 
 
+_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de una tabla B.1 (personal clave) que tiene {n_esperados} filas numeradas. Faltan {n_faltantes} cargos.
+
+CARGOS YA EXTRAIDOS (no los repitas):
+{cargos_extraidos}
+
+Revisa de nuevo el texto y extrae SOLO los cargos QUE FALTAN (con sus datos de B.1 y B.2). Presta especial atencion al final de la tabla donde los cargos suelen tener OCR fragmentado (palabras partidas en multiples lineas, footnotes numericos como "75" intercalados). Ignora frases sueltas como "MANTENIMIENTO VIAL" o "CONCURSO PUBLICO" que no son cargos.
+
+TEXTO DEL DOCUMENTO:
+{texto}
+
+Responde SOLO JSON con los FALTANTES (sin duplicar los ya extraidos):
+{{"personal_clave": [...]}}
+/no_think
+""".strip()
+
+
+def retry_cargos_faltantes(
+    texto_fuente: str,
+    items_ya_extraidos: list,
+    n_esperados: int,
+) -> list:
+    """
+    Invoca a Qwen con un prompt especializado pidiendo SOLO los cargos que el
+    LLM omitio en la primera pasada. El modelo ya tiene el contexto y puede
+    enfocarse en los faltantes (tipicamente los ultimos items que tienen OCR
+    fragmentado).
+
+    Retorna lista de items nuevos (sin mezclar con los originales — el caller
+    debe concatenar).
+    """
+    cargos_extraidos = [str(it.get("cargo", "?")) for it in items_ya_extraidos]
+    n_extraidos = len(cargos_extraidos)
+    n_faltantes = max(0, n_esperados - n_extraidos)
+    if n_faltantes <= 0:
+        return []
+
+    prompt = _PROMPT_RETRY_FALTANTES.format(
+        n_extraidos=n_extraidos,
+        n_esperados=n_esperados,
+        n_faltantes=n_faltantes,
+        cargos_extraidos="\n".join(f"- {c}" for c in cargos_extraidos),
+        texto=texto_fuente[:QWEN_NUM_CTX * 3],  # cap conservador
+    )
+
+    logger.info(
+        f"[llm-retry] Re-invocando LLM para recuperar {n_faltantes} cargos "
+        f"faltantes ({n_extraidos}/{n_esperados} extraidos)"
+    )
+
+    try:
+        client = _get_client()
+        t0 = time.perf_counter()
+        response = client.chat.completions.create(
+            model=QWEN_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=QWEN_MAX_TOKENS,
+            extra_body={
+                "keep_alive": "10m",
+                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
+            },
+        )
+        elapsed = time.perf_counter() - t0
+    except Exception as e:
+        logger.warning(f"[llm-retry] Qwen fallo en retry: {e}")
+        return []
+
+    raw = response.choices[0].message.content.strip()
+    cleaned = _limpiar_respuesta(raw)
+
+    # Intentar parsear
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = _reparar_json(cleaned) or {}
+
+    items_nuevos = data.get("personal_clave", []) if isinstance(data, dict) else []
+    if not isinstance(items_nuevos, list):
+        items_nuevos = []
+
+    # Guardar dump para auditoria
+    try:
+        _guardar_call_llm(
+            block_type="rtm_personal_retry",
+            page_range=(0, 0),
+            prompt=prompt,
+            raw_response=raw,
+            usage={
+                "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0),
+                "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0),
+            },
+            elapsed_s=elapsed,
+            num_ctx=QWEN_NUM_CTX,
+            parsed_ok=bool(items_nuevos),
+            items_extracted=len(items_nuevos),
+            error=None if items_nuevos else "retry sin items",
+            model=QWEN_MODEL,
+            response_model=getattr(response, "model", None),
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        f"[llm-retry] Recupero {len(items_nuevos)} cargo(s) faltante(s) "
+        f"en {elapsed:.1f}s"
+    )
+    return items_nuevos
+
+
 def _es_respuesta_fabricada(raw_response: str) -> bool:
     """Detecta si el LLM generó un 'ejemplo' en vez de extraer datos reales."""
     texto = raw_response.lower()
