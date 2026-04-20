@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -693,6 +694,45 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr
     # Se borra al eliminar el job via DELETE /api/jobs/:id.
 
 
+@contextmanager
+def _smooth_progress(
+    job_id: str,
+    start_pct: int,
+    end_pct: int,
+    interval_sec: float = 5.0,
+    step: int = 1,
+):
+    """
+    Avanza progress_pct gradualmente mientras el contexto esta activo.
+    Util para fases internas largas sin hitos granulares (ej: extraer_bases()).
+
+    - Sube `step`% cada `interval_sec` segundos, hasta `end_pct`.
+    - Si la fase termina antes, el caller debe setear el progress final
+      al salir del with (el ticker no pasa de end_pct).
+    - Si la fase tarda mas que (end_pct - start_pct) * interval_sec,
+      la barra se queda en end_pct hasta que termine.
+    """
+    stop_event = threading.Event()
+    state = {"current": start_pct}
+
+    def tick():
+        while not stop_event.wait(interval_sec):
+            if state["current"] < end_pct:
+                state["current"] = min(state["current"] + step, end_pct)
+                try:
+                    _update_job(job_id, progress_pct=state["current"])
+                except Exception as e:
+                    logger.warning("smooth_progress tick fallo: %s", e)
+
+    t = threading.Thread(target=tick, daemon=True, name=f"progress-{job_id}")
+    t.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        t.join(timeout=1)
+
+
 def _escribir_texto_tdr_md(
     output_dir: Path,
     pdf_path: Path,
@@ -814,11 +854,15 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
         _update_job(job_id, progress_pct=30, progress_stage="Analizando requisitos TDR")
         _append_job_log(job_id, "Llamando a extraer_bases()...")
 
-        tdr_result = extraer_bases(
-            full_text,
-            nombre_archivo=pdf_path.name,
-            pdf_path=str(pdf_path),
-        )
+        # Progreso gradual 30→85 durante las llamadas LLM internas de extraer_bases
+        # (que no reportan granularidad propia). Interval 6s, step 1% → ~5.5 min para
+        # llegar al tope. Si termina antes, se queda en donde este y sigue con 90+.
+        with _smooth_progress(job_id, start_pct=30, end_pct=85, interval_sec=6.0):
+            tdr_result = extraer_bases(
+                full_text,
+                nombre_archivo=pdf_path.name,
+                pdf_path=str(pdf_path),
+            )
 
         _update_job(job_id, progress_pct=90, progress_stage="Procesando resultados TDR")
 
