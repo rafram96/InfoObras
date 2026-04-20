@@ -229,18 +229,47 @@ def _guardar_raw_error(
         return None
 
 
-_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de una tabla B.1 (personal clave) que tiene {n_esperados} filas numeradas. Faltan {n_faltantes} cargos.
+_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de la tabla de personal clave (B.1 + B.2) pero la tabla tiene {n_esperados} filas numeradas. Faltan aproximadamente {n_faltantes} cargos.
 
-CARGOS YA EXTRAIDOS (no los repitas):
+CARGOS YA EXTRAIDOS (no los repitas — busca SOLO los que NO estan en esta lista):
 {cargos_extraidos}
 
-Revisa de nuevo el texto y extrae SOLO los cargos QUE FALTAN (con sus datos de B.1 y B.2). Presta especial atencion al final de la tabla donde los cargos suelen tener OCR fragmentado (palabras partidas en multiples lineas, footnotes numericos como "75" intercalados). Ignora frases sueltas como "MANTENIMIENTO VIAL" o "CONCURSO PUBLICO" que no son cargos.
+Busca en el texto los cargos que FALTAN — pueden estar:
+- Al INICIO de la tabla (ej: GERENTE DE CONTRATO, JEFE DE SUPERVISION, INGENIERO DE CAMPO en pags iniciales).
+- Al FINAL (ej: ESPECIALISTA EN INSTALACIONES ELECTROMECANICAS) con OCR fragmentado.
+- En paginas intermedias donde el OCR partio palabras ("GERENTEDE", "INGENIEROElectricista").
+
+Ignora: "MANTENIMIENTO VIAL", "CONCURSO PUBLICO", numeros de pagina, footnotes como "75", "96".
+
+SCHEMA OBLIGATORIO (NO INVENTES CAMPOS — usa EXACTAMENTE estos nombres):
+{{
+  "personal_clave": [
+    {{
+      "cargo": "NOMBRE EXACTO DEL CARGO COMO APARECE",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto", ...],
+      "anos_colegiado": null,
+      "experiencia_minima": {{
+        "cantidad": <numero de meses>,
+        "unidad": "meses",
+        "descripcion": "<copia literal de la columna TRABAJOS O PRESTACIONES>",
+        "cargos_similares_validos": ["..."],
+        "puntaje_por_experiencia": null,
+        "puntaje_maximo": null
+      }},
+      "tipo_obra_valido": "establecimientos de salud",
+      "tiempo_adicional_factores": null,
+      "capacitacion": {{"tema": null, "tipo": null, "duracion_minima_horas": null, "es_factor_evaluacion": false}},
+      "pagina": <numero>
+    }}
+  ]
+}}
+
+NO uses "formacion_academica" ni "titulo_profesional" ni otros nombres. Solo el schema arriba.
 
 TEXTO DEL DOCUMENTO:
 {texto}
 
 Responde SOLO JSON con los FALTANTES (sin duplicar los ya extraidos):
-{{"personal_clave": [...]}}
 /no_think
 """.strip()
 

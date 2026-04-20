@@ -1220,20 +1220,23 @@ def extraer_bases(
                     for item in items:
                         item["_vl_source"] = True
 
-                # Retry si detectamos que el LLM omitio cargos al final de la tabla.
-                # Busca el numero max en la columna N° del texto fuente; si >len(items),
-                # re-invoca al LLM pidiendo SOLO los faltantes.
-                n_esperados = _detectar_max_numero_cargo(sub_block.text)
-                if n_esperados > len(items) + 0:
+                # Retry si detectamos que el LLM omitio cargos. Buscamos el N maximo
+                # en el FULL TEXT del documento — no solo en el sub-bloque. Asi
+                # captamos cargos (#1, #2, #3) que pudieron quedar en pag 2 si el
+                # scorer la clasifico como rtm_postor. El retry tambien recibe el
+                # full_text para tener acceso a esas paginas perdidas.
+                n_esperados = _detectar_max_numero_cargo(full_text)
+                if n_esperados > len(items):
                     logger.warning(
-                        "[pipeline] LLM extrajo %d cargos pero texto tiene N max = %d. "
-                        "Disparando retry automatico para recuperar faltantes.",
+                        "[pipeline] LLM extrajo %d cargos pero full_text tiene N max = %d. "
+                        "Disparando retry automatico (usando texto completo para "
+                        "capturar cargos en paginas clasificadas como rtm_postor).",
                         len(items), n_esperados,
                     )
                     try:
                         from src.tdr.extractor.llm import retry_cargos_faltantes
                         items_nuevos = retry_cargos_faltantes(
-                            sub_block.text, items, n_esperados,
+                            full_text, items, n_esperados,
                         )
                         if items_nuevos:
                             items = items + items_nuevos
