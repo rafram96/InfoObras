@@ -199,6 +199,22 @@ REGLA CRÍTICA:
 - Solo extrae información que REALMENTE aparece en el texto proporcionado.
 - Extrae TODOS los cargos que encuentres, no solo algunos.
 
+CONTEO EXACTO (CRÍTICO):
+- La tabla B.1 tiene filas numeradas: 1, 2, 3, ..., N. Identifica el ÚLTIMO número (N).
+- Tu respuesta DEBE contener EXACTAMENTE N items en "personal_clave" — ni uno menos.
+- Antes de responder, VERIFICA: ¿mi array tiene N elementos? Si falta alguno, revisa la
+  tabla de nuevo: los últimos items suelen tener OCR fragmentado (ej: "ESPECIALISTA EN /
+  INSTALACIONES / ELECTROMECÁNICAS" partido en 3 líneas con footnotes como "75" intercalados).
+- Ignora frases sueltas que NO son cargos: "MANTENIMIENTO VIAL", "CONCURSO PÚBLICO",
+  números de página, headers repetidos del documento.
+
+COPIA LITERAL DEL CARGO:
+- El campo "cargo" debe ser la transcripción EXACTA de la columna "CARGO Y/O
+  RESPONSABILIDAD" de la tabla B.1. NO parafrasees.
+- Ejemplo: si el texto dice "ESPECIALISTA BIM" (sin "EN"), el cargo es "ESPECIALISTA BIM",
+  NO "ESPECIALISTA EN BIM". Si el texto dice "GERENTE DE CONTRATO", NO escribas "Gerente
+  de Contrato" (respeta mayúsculas del documento).
+
 REGLA DE RELLENO — LISTA NEGRA:
 Si no hay datos claros en el texto, **responde con lista vacía**. Está PROHIBIDO generar
 items con profesiones como esta lista vaga:
