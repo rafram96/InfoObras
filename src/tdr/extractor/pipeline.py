@@ -309,6 +309,88 @@ def _detectar_max_numero_cargo(texto: str) -> int:
     return max(nums) if nums else 0
 
 
+_PREFIJOS_CARGO = (
+    "especialista", "jefe", "gerente", "supervisor", "coordinador",
+    "responsable", "inspector", "residente", "ingeniero de campo",
+    "asistente", "director", "arquitecto de obra", "arquitecto de campo",
+    "arquitecto especialista",
+)
+_PREFIJOS_PROFESION = (
+    "ingeniero", "arquitecto", "tecnologo", "tecnólogo", "medico", "médico",
+    "licenciado", "bachiller", "quimico", "químico", "geologo", "geólogo",
+    "economista", "administrador",
+)
+
+
+def _es_profesion_real(texto: str) -> bool:
+    """True si `texto` parece un titulo universitario y NO un puesto de trabajo."""
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    if len(t) < 4:
+        return False
+    # Si empieza con un prefijo de CARGO, NO es profesion (contaminacion de B.2)
+    if any(t.startswith(p) for p in _PREFIJOS_CARGO):
+        # Excepcion: "Ingeniero de campo" es cargo, "Ingeniero Civil" es profesion
+        # Verificamos si contiene algun titulo profesional dentro
+        return False
+    # Si empieza con un prefijo de PROFESION, sí es profesion
+    if any(t.startswith(p) for p in _PREFIJOS_PROFESION):
+        # Pero "Ingeniero de campo" / "Arquitecto de obra" son cargos, no profesiones
+        if any(f"{p} de" in t[:30] and not any(tit in t for tit in ("civil", "sanitario", "electrico", "mecanico", "ambiental"))
+               for p in ("ingeniero", "arquitecto")):
+            # Hmm caso borderline, permitir
+            pass
+        return True
+    return False
+
+
+def _limpiar_profesiones_y_cargos(item: dict) -> dict:
+    """
+    Separa contaminacion entre profesiones_aceptadas (titulos) y
+    cargos_similares_validos (puestos). El LLM a veces mezcla ambas columnas.
+    """
+    profs = item.get("profesiones_aceptadas") or []
+    if not isinstance(profs, list):
+        return item
+    exp = item.get("experiencia_minima") or {}
+    if not isinstance(exp, dict):
+        exp = {}
+    cargos_sim = exp.get("cargos_similares_validos") or []
+    if not isinstance(cargos_sim, list):
+        cargos_sim = []
+
+    profs_limpias = []
+    cargos_movidos = []
+    for p in profs:
+        if not isinstance(p, str):
+            continue
+        if _es_profesion_real(p):
+            profs_limpias.append(p)
+        else:
+            # No parece profesion — probable puesto contaminado desde B.2
+            cargos_movidos.append(p)
+
+    if cargos_movidos:
+        logger.info(
+            "[validador] Cargo '%s': %d puesto(s) movido(s) de profesiones a "
+            "cargos_similares_validos: %s",
+            item.get("cargo", "?"), len(cargos_movidos), cargos_movidos,
+        )
+
+    item["profesiones_aceptadas"] = profs_limpias
+    # Agregar los movidos a cargos_similares_validos (sin duplicar)
+    if cargos_movidos:
+        existentes_lower = {c.lower() for c in cargos_sim if isinstance(c, str)}
+        for c in cargos_movidos:
+            if c.lower() not in existentes_lower:
+                cargos_sim.append(c)
+        exp["cargos_similares_validos"] = cargos_sim
+        item["experiencia_minima"] = exp
+
+    return item
+
+
 def _normalizar_para_fuzzy(texto: str) -> str:
     """Normaliza texto para comparacion fuzzy: minusculas, sin tildes, sin signos."""
     import unicodedata
@@ -1252,6 +1334,10 @@ def extraer_bases(
                 items = _marcar_cargos_no_en_fuente(
                     items, sub_block.text, sub_block.page_range,
                 )
+                # Separar contaminacion de columnas: los "Especialista en X",
+                # "Jefe de Y" metidos en profesiones_aceptadas se mueven a
+                # cargos_similares_validos (su lugar correcto).
+                items = [_limpiar_profesiones_y_cargos(it) for it in items]
                 resultado["rtm_personal"].extend(items)
             elif block.block_type == "factores_evaluacion":
                 resultado["factores_evaluacion"].extend(data.get("factores_evaluacion", []))

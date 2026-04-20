@@ -202,6 +202,44 @@ REGLA CRÍTICA:
 - El campo "cargo" debe ser la transcripción exacta de la columna "CARGO Y/O RESPONSABILIDAD"
   (respeta mayúsculas del documento, ej: "ESPECIALISTA BIM" no "Especialista en BIM").
 
+COLUMNAS SEPARADAS — NO MEZCLES (CRÍTICO):
+La tabla B.1 tiene columnas: CARGO | FORMACIÓN ACADÉMICA | TÍTULO.
+La tabla B.2 tiene columnas: CARGO | TIEMPO | TRABAJOS O PRESTACIONES.
+
+- "profesiones_aceptadas" → SOLO la columna FORMACIÓN ACADÉMICA de B.1.
+  Son TÍTULOS universitarios: "Ingeniero Civil", "Arquitecto", "Ingeniero Sanitario",
+  "Tecnólogo Médico", "Médico", "Ingeniero Electromecánico", etc.
+  Siempre empiezan con "Ingeniero", "Arquitecto", "Tecnólogo", "Médico", "Licenciado",
+  "Bachiller".
+
+- "cargos_similares_validos" → SOLO la columna TRABAJOS O PRESTACIONES de B.2.
+  Son PUESTOS DE TRABAJO: "Especialista en X", "Jefe de Y", "Supervisor de Z",
+  "Coordinador de...", "Gerente de...", "Responsable de...", "Inspector de...".
+
+PROHIBIDO CRUZAR COLUMNAS:
+- NUNCA pongas un puesto ("Especialista en BIM", "Jefe de Estructuras", "Ingeniero
+  Estructural", "Ingeniero de Calidad", "Ingeniero en Instalaciones Sanitarias")
+  dentro de "profesiones_aceptadas". Son puestos, no títulos.
+- NUNCA pongas un título ("Ingeniero Civil", "Arquitecto") dentro de
+  "cargos_similares_validos". Son títulos, no puestos.
+
+EJEMPLO — ESPECIALISTA EN INSTALACIONES SANITARIAS:
+- B.1 dice: "Ingeniero Sanitario y/o Ingeniero Civil"
+  → profesiones_aceptadas: ["Ingeniero Sanitario", "Ingeniero Civil"]
+- B.2 dice: "Especialista en Instalaciones Sanitarias y/o Jefe en Instalaciones
+  Sanitarias y/o Ingeniero Sanitario y/o Especialista Sanitario..."
+  → cargos_similares_validos: ["Especialista en Instalaciones Sanitarias",
+    "Jefe en Instalaciones Sanitarias", "Especialista Sanitario"]
+  (NOTA: "Ingeniero Sanitario" aparece en AMBAS — en B.2 funciona como puesto y
+  también es título. En ese caso prioriza ponerlo en profesiones_aceptadas.)
+
+NO TRAIGAS PROFESIONES DE OTRAS FILAS:
+- Las profesiones de cada cargo están SOLO en SU propia fila de B.1. Si un cargo
+  aparece en fila 6, sus profesiones están en la columna FORMACIÓN ACADÉMICA de
+  esa misma fila 6 — no mires filas 5 ni 7.
+- Ejemplo erróneo: poner "Tecnólogo Médico" en COMUNICACIONES. Tecnólogo Médico
+  está en la fila de EQUIPAMIENTO HOSPITALARIO, NO en COMUNICACIONES.
+
 REGLA DE RELLENO — LISTA NEGRA:
 Si no hay datos claros en el texto, **responde con lista vacía**. Está PROHIBIDO generar
 items con profesiones como esta lista vaga:
