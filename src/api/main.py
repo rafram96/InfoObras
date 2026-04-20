@@ -83,6 +83,24 @@ if not _TDR_AVAILABLE:
         "los jobs de tipo 'tdr' no funcionarán."
     )
 
+# Log prominente al startup: confirma que modelo y num_ctx se estan usando.
+# Se ve en la consola de uvicorn inmediatamente al arrancar.
+try:
+    from src.tdr.config.settings import (
+        QWEN_MODEL as _STARTUP_QWEN_MODEL,
+        QWEN_NUM_CTX as _STARTUP_NUM_CTX,
+        QWEN_VL_MODEL as _STARTUP_QWEN_VL_MODEL,
+    )
+    print("=" * 70)
+    print(f"  QWEN_MODEL        = {_STARTUP_QWEN_MODEL}")
+    print(f"  QWEN_NUM_CTX      = {_STARTUP_NUM_CTX}")
+    print(f"  QWEN_VL_MODEL     = {_STARTUP_QWEN_VL_MODEL}")
+    print(f"  .env QWEN_MODEL   = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
+    print(f"  .env QWEN_NUM_CTX = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
+    print("=" * 70)
+except Exception as _e:
+    print(f"[startup] No se pudo imprimir config Ollama: {_e}")
+
 # ── App ───────────────────────────────────────────────────────────────────────
 # ── Logging con contexto de job_id ───────────────────────────────────────────
 # Todos los logs emitidos mientras un job corre llevan [job_id] automaticamente
