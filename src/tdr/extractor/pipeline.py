@@ -16,7 +16,11 @@ from src.validation.matching import normalizar_cargo as _normalizar_cargo
 logger = logging.getLogger(__name__)
 
 # Máximo de caracteres por bloque antes de subdividir
-_MAX_BLOCK_CHARS = 15_000
+# Con QWEN_NUM_CTX=16384 (~48k chars), un bloque de 30k chars + prompt (≈4k chars)
+# deja margen para que el LLM responda. Antes era 15k porque Ollama truncaba a
+# 4096 tok por defecto y habia que sub-dividir. Ahora permite que rtm_personal
+# (9 paginas de tablas B.1+B.2) llegue ENTERO al LLM sin perder contexto global.
+_MAX_BLOCK_CHARS = 30_000
 _OVERLAP_PAGES = 1  # páginas de solapamiento entre sub-bloques
 
 

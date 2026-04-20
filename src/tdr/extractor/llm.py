@@ -11,7 +11,7 @@ from openai import OpenAI
 
 from src.tdr.config.settings import (
     QWEN_OLLAMA_BASE_URL, QWEN_OLLAMA_API_KEY,
-    QWEN_MODEL, QWEN_MAX_TOKENS, QWEN_TIMEOUT,
+    QWEN_MODEL, QWEN_MAX_TOKENS, QWEN_TIMEOUT, QWEN_NUM_CTX,
 )
 from src.tdr.config.signals import PROMPTS
 from src.tdr.extractor.scorer import Block
@@ -203,10 +203,18 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
     prompt = prompt_template.format(texto=block.text)
     diag["prompt_chars"] = len(prompt)
 
+    # Estimacion conservadora: 1 token ≈ 3 chars en espanol con numeros/puntuacion
+    approx_tokens = len(prompt) // 3
     logger.info(
         f"[llm] Enviando bloque '{block.block_type}' "
-        f"págs {block.page_range} ({len(prompt)} chars)"
+        f"págs {block.page_range} ({len(prompt)} chars ≈ {approx_tokens} tok, "
+        f"num_ctx={QWEN_NUM_CTX})"
     )
+    if approx_tokens > QWEN_NUM_CTX:
+        logger.warning(
+            f"[llm] ⚠ Prompt ≈ {approx_tokens} tok SUPERA num_ctx={QWEN_NUM_CTX} — "
+            f"Ollama truncara. Considerar subir QWEN_NUM_CTX o reducir el bloque."
+        )
 
     try:
         client = _get_client()
@@ -218,7 +226,13 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
             max_tokens=QWEN_MAX_TOKENS,
             extra_body={
                 "keep_alive": "10m",
-                "options": {"num_gpu": 99},
+                "options": {
+                    "num_gpu": 99,
+                    # Ventana de contexto completa. Default de Ollama es 4096 tok
+                    # que trunca prompts largos silenciosamente → causa principal
+                    # de alucinaciones en tablas TDR multi-pagina.
+                    "num_ctx": QWEN_NUM_CTX,
+                },
             },
         )
         elapsed = time.perf_counter() - t0
