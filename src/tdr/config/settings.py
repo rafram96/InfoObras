@@ -1,19 +1,26 @@
 import os
 from pathlib import Path
 
+# Asegurar que .env este cargado antes de leer os.getenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ── Motor OCR ─────────────────────────────────────────────────────────────────
 MOTOR_OCR_REPO    = Path(r"D:\proyectos\motor-OCR")
 MOTOR_OCR_TIMEOUT = 7200  # segundos
 
 # ── Ollama ───────────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL      = "http://localhost:11434"
+OLLAMA_BASE_URL      = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # ── Qwen 14B (extracción semántica) ─────────────────────────────────────────
 QWEN_OLLAMA_BASE_URL = f"{OLLAMA_BASE_URL}/v1"
 QWEN_OLLAMA_API_KEY  = "ollama"
-QWEN_MODEL           = "qwen2.5:14b"
-QWEN_MAX_TOKENS      = 8192        # tokens MÁXIMOS de respuesta
-QWEN_TIMEOUT         = 300
+QWEN_MODEL           = os.getenv("QWEN_MODEL", "qwen2.5:14b")
+QWEN_MAX_TOKENS      = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
+QWEN_TIMEOUT         = int(os.getenv("QWEN_TIMEOUT", "300"))
 # Ventana de contexto (input+output). Ollama default es 4096 tokens (~12k chars),
 # lo que TRUNCA prompts largos silenciosamente y causa alucinaciones ("Gerente de
 # Proyecto" en vez de "GERENTE DE CONTRATO", tipo_obra inventado, etc.).
@@ -26,8 +33,8 @@ QWEN_TIMEOUT         = 300
 QWEN_NUM_CTX         = int(os.getenv("QWEN_NUM_CTX", "12288"))
 
 # ── Qwen VL (lectura visual de tablas) ──────────────────────────────────────
-QWEN_VL_MODEL   = "qwen2.5vl:7b"
-QWEN_VL_TIMEOUT = 120   # segundos por imagen
+QWEN_VL_MODEL   = os.getenv("QWEN_VL_MODEL", "qwen2.5vl:7b")
+QWEN_VL_TIMEOUT = int(os.getenv("QWEN_VL_TIMEOUT", "120"))   # segundos por imagen
 
 # ── Scorer ────────────────────────────────────────────────────────────────────
 SCORER_MIN_SCORE  = 3.0   # score mínimo para considerar una página relevante
