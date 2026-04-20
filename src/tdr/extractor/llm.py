@@ -3,6 +3,8 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from openai import OpenAI
@@ -15,6 +17,9 @@ from src.tdr.config.signals import PROMPTS
 from src.tdr.extractor.scorer import Block
 
 logger = logging.getLogger(__name__)
+
+# Donde se guarda el raw del LLM cuando la reparacion falla — para debug.
+_LLM_ERRORS_DIR = Path("data/llm_errors")
 
 _client: Optional[OpenAI] = None
 
@@ -82,6 +87,7 @@ def _reparar_json(raw: str) -> Optional[dict]:
     2. Coma faltante entre valor y llave: "valor"  "llave" → "valor", "llave"
     3. Comas trailing antes de cierre: ,} → }  ,] → ]
     4. Cerrar brackets/braces sin cerrar
+    5. Fallback final: json_repair (si esta instalado) — mucho mas agresivo
     """
     # 1. Coma faltante entre objetos en arrays: } { o }\n{
     fixed = re.sub(r"\}\s*\{", "},{", raw)
@@ -109,6 +115,51 @@ def _reparar_json(raw: str) -> Optional[dict]:
     try:
         return json.loads(fixed)
     except json.JSONDecodeError:
+        pass
+
+    # 5. Ultimo recurso: json_repair library si esta instalada.
+    #    `pip install json-repair` — maneja muchos mas casos que los regex de arriba
+    #    (comillas sin cerrar, valores truncados, mix de comillas, etc.)
+    try:
+        from json_repair import repair_json  # type: ignore
+        repaired_str = repair_json(raw)
+        return json.loads(repaired_str)
+    except ImportError:
+        logger.debug("json_repair no instalado — saltando fallback agresivo")
+    except Exception as e:
+        logger.debug(f"json_repair tambien fallo: {e}")
+
+    return None
+
+
+def _guardar_raw_error(
+    block_type: str,
+    page_range: tuple,
+    raw: str,
+    error: Exception,
+) -> Optional[Path]:
+    """
+    Guarda el raw completo de una respuesta LLM cuya reparacion fallo.
+    Permite inspeccionar despues para ajustar el reparador o el prompt.
+    """
+    try:
+        _LLM_ERRORS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        pags = f"{page_range[0]}-{page_range[1]}" if len(page_range) >= 2 else "x"
+        path = _LLM_ERRORS_DIR / f"{block_type}_pags_{pags}_{ts}.txt"
+        path.write_text(
+            f"# Error de JSON invalido del LLM\n"
+            f"Fecha: {datetime.now().isoformat()}\n"
+            f"Bloque: {block_type}\n"
+            f"Paginas: {page_range}\n"
+            f"Error: {error}\n"
+            f"Longitud raw: {len(raw)} chars\n"
+            f"\n---RAW RESPONSE COMPLETO---\n{raw}\n",
+            encoding="utf-8",
+        )
+        return path
+    except Exception as e:
+        logger.warning(f"No se pudo guardar raw error a disco: {e}")
         return None
 
 
@@ -263,6 +314,13 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
 
             return repaired, diag
 
-        diag["error"] = f"JSON inválido (reparación falló): {e} — raw: {raw[:200]!r}"
+        raw_file = _guardar_raw_error(block.block_type, block.page_range, raw, e)
+        # Log con snippet mas amplio (1500 chars vs 200) para diagnostico inmediato,
+        # y ruta al archivo con el raw completo para inspeccion offline.
+        diag["error"] = (
+            f"JSON inválido (reparación falló): {e}"
+            + (f" — raw completo en {raw_file}" if raw_file else "")
+            + f"\nsnippet (primeros 1500 chars): {raw[:1500]!r}"
+        )
         logger.warning(f"[llm] {diag['error']}")
         return None, diag

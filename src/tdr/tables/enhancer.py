@@ -208,14 +208,39 @@ def _ejecutar_worker(
         logger.info(f"[enhancer] Lanzando worker Qwen VL ({len(grupos)} grupos)...")
         resultado = subprocess.run(
             [sys.executable, _WORKER_PATH, _PROJECT_ROOT, tmp_json, tmp_pkl],
-            check=False,           # no lanzar excepción si el worker falla
-            capture_output=False,  # los logs del worker van a stdout/stderr directamente
+            check=False,
+            capture_output=True,   # capturamos para loguear stderr cuando falla
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         if resultado.returncode != 0:
             logger.warning(
                 f"[enhancer] Worker terminó con código {resultado.returncode}"
             )
+            # Imprimir stdout/stderr del worker al log del proceso padre.
+            # Asi el error del subprocess aparece en data/logs/job-{id}.log
+            # (gracias al contextvar job_id del caller) y es facil de diagnosticar.
+            stdout = (resultado.stdout or "").strip()
+            stderr = (resultado.stderr or "").strip()
+            if stdout:
+                logger.warning(
+                    "[enhancer] === Worker STDOUT ===\n%s\n=== fin STDOUT ===",
+                    stdout[-4000:],
+                )
+            if stderr:
+                logger.warning(
+                    "[enhancer] === Worker STDERR ===\n%s\n=== fin STDERR ===",
+                    stderr[-4000:],
+                )
+        else:
+            # En exito, opcionalmente loguear stdout a DEBUG (no inundar INFO)
+            if resultado.stdout and resultado.stdout.strip():
+                logger.debug(
+                    "[enhancer] Worker stdout:\n%s",
+                    resultado.stdout.strip()[-2000:],
+                )
 
         # Leer resultados aunque el returncode sea != 0 (puede haber resultados parciales)
         reemplazos: dict[int, str] = {}
