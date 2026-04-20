@@ -13,6 +13,7 @@ Arrancar:
     uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -82,8 +83,32 @@ if not _TDR_AVAILABLE:
     )
 
 # ── App ───────────────────────────────────────────────────────────────────────
-_LOG_FMT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
+# ── Logging con contexto de job_id ───────────────────────────────────────────
+# Todos los logs emitidos mientras un job corre llevan [job_id] automaticamente
+# gracias a contextvars + un filter. Asi `grep '[a8b73c9f]' data/backend.log`
+# retorna TODOS los logs relacionados al job, incluyendo los de librerias
+# (extract_block, motor_ocr_client, pdfplumber, etc.) que no saben del job_id.
+
+_JOB_ID_CTX: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "job_id", default=None
+)
+
+
+class _JobIdFilter(logging.Filter):
+    """Inyecta `job_id` del contextvar actual a cada LogRecord."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.job_id = _JOB_ID_CTX.get() or "-"
+        return True
+
+
+_LOG_FMT = "%(asctime)s %(levelname)s [%(job_id)s] %(name)s — %(message)s"
 logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+
+# Los handlers creados por basicConfig necesitan el filter para que %(job_id)s
+# no crashee cuando el contextvar no este set (valor default "-")
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_JobIdFilter())
 
 # Log a archivo para debug persistente
 _LOG_FILE = Path("data/backend.log")
@@ -91,7 +116,61 @@ _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 _file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
 _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(logging.Formatter(_LOG_FMT))
+_file_handler.addFilter(_JobIdFilter())
 logging.getLogger().addHandler(_file_handler)
+
+# Directorio donde se escriben logs por-job (uno por cada ejecucion)
+_JOB_LOGS_DIR = Path("data/logs")
+_JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _with_job_logging(fn):
+    """Decorador para runners: envuelve la fn en _job_logging_context(job_id)."""
+    def wrapper(job_id, *args, **kwargs):
+        with _job_logging_context(job_id):
+            return fn(job_id, *args, **kwargs)
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
+
+
+@contextmanager
+def _job_logging_context(job_id: str):
+    """
+    Context manager que:
+    1. Setea el contextvar job_id para que todos los logs durante el bloque
+       lleven [job_id] en el formato
+    2. Agrega un FileHandler temporal que escribe SOLO los logs de este job
+       a data/logs/job-{job_id}.log (uno por cada re-run, modo append)
+
+    Uso:
+        def _run_job(job_id, ...):
+            with _job_logging_context(job_id):
+                # toda la logica del job
+                ...
+    """
+    token = _JOB_ID_CTX.set(job_id)
+
+    per_job_path = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    per_job_handler = logging.FileHandler(per_job_path, encoding="utf-8", mode="a")
+    per_job_handler.setLevel(logging.DEBUG)
+    per_job_handler.setFormatter(logging.Formatter(_LOG_FMT))
+    per_job_handler.addFilter(_JobIdFilter())
+    # El filter extra asegura que solo logs DE ESTE job llegan al archivo
+    # (otros jobs corriendo en paralelo no se cuelan)
+    per_job_handler.addFilter(lambda r: getattr(r, "job_id", None) == job_id)
+    logging.getLogger().addHandler(per_job_handler)
+
+    try:
+        yield
+    finally:
+        logging.getLogger().removeHandler(per_job_handler)
+        try:
+            per_job_handler.close()
+        except Exception:
+            pass
+        _JOB_ID_CTX.reset(token)
+
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +500,7 @@ def _ejecutar_ocr_con_fallback(
 
 
 # ── Job runner ────────────────────────────────────────────────────────────────
+@_with_job_logging
 def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr: bool = False) -> None:
     _check_cancelled(job_id)
     _update_job(
@@ -658,6 +738,7 @@ def _escribir_texto_tdr_md(
 
 
 # ── TDR Job runner ─────────────────────────────────────────────────────────
+@_with_job_logging
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
     _check_cancelled(job_id)
@@ -780,6 +861,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
 
 
 # ── Full Pipeline Job runner ───────────────────────────────────────────────
+@_with_job_logging
 def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional[list], force_motor_ocr: bool = False) -> None:
     """
     Pipeline completo: propuesta + bases → OCR → Pasos 1-4 → Excel.
@@ -1423,6 +1505,30 @@ async def evaluate_job(
     }
 
 
+@app.get("/api/jobs/{job_id}/log", tags=["Jobs"])
+async def get_job_log(job_id: str):
+    """
+    Retorna el archivo de log dedicado del job (data/logs/job-{id}.log).
+    Contiene TODOS los logs emitidos durante la ejecucion, incluyendo los
+    de librerias (extract_block, motor_ocr_client, etc.) gracias al filter
+    de contextvars.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    log_path = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    if not log_path.exists():
+        raise HTTPException(
+            404,
+            "Log no encontrado. El job quiza fue creado antes del contexto "
+            "de logging o el archivo fue limpiado al borrar el job.",
+        )
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo log: {e}")
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+
 @app.get("/api/jobs/{job_id}/files", tags=["Jobs"])
 async def list_job_files(job_id: str):
     """
@@ -1614,13 +1720,16 @@ async def delete_job(job_id: str):
                 _cancelled_jobs.add(job_id)
                 logger.info("Job %s: marcado como cancelado", job_id)
             cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
-    # Limpiar artefactos en disco: .md del OCR y PDFs preservados
+    # Limpiar artefactos en disco: .md del OCR, PDFs preservados y log dedicado
     output_dir = OUTPUT_DIR / job_id
     if output_dir.exists():
         shutil.rmtree(output_dir, ignore_errors=True)
     uploads_dir = UPLOADS_DIR / job_id
     if uploads_dir.exists():
         shutil.rmtree(uploads_dir, ignore_errors=True)
+    job_log = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    if job_log.exists():
+        job_log.unlink(missing_ok=True)
     return {"ok": True}
 
 
