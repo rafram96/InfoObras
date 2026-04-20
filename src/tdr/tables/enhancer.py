@@ -40,8 +40,11 @@ logger = logging.getLogger(__name__)
 # Se llena al terminar _ejecutar_worker y se usa en _guardar_debug_vl.
 _DIAGNOSTICOS_VL: list[dict] = []
 
-# Directorio raíz del proyecto (dos niveles sobre src/tables/)
-_PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
+# Root del repo (Alpamayo-InfoObras/) — un nivel arriba de src/.
+# El worker recibe esto y hace sys.path.insert(0, project_root), asi puede
+# `import src.tdr.config.settings`. Antes apuntaba a src/ y fallaba con
+# `ModuleNotFoundError: No module named 'src'`.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
 _WORKER_PATH  = str(Path(__file__).parent / "qwen_vl_worker.py")
 
 
