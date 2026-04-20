@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from src.tdr.extractor.parser import parse_full_text
 from src.tdr.extractor.scorer import score_page, group_into_blocks, Block, PageScore
@@ -305,6 +305,49 @@ def _detectar_max_numero_cargo(texto: str) -> int:
     """Alias retrocompatible: retorna solo el maximo detectado."""
     nums = _detectar_numeros_cargo(texto)
     return max(nums) if nums else 0
+
+
+def _inferir_numero_cargo(cargo: str, texto: str) -> Optional[int]:
+    """
+    Dado un cargo extraido por el LLM, busca su N° correspondiente en el texto.
+    Retorna el numero si lo encuentra, None si no.
+    """
+    if not cargo or not texto:
+        return None
+    palabras_distintivas = re.findall(r"\b[A-ZÁÉÍÓÚÑ]{4,}\b", cargo.upper())
+    if not palabras_distintivas:
+        return None
+    # Tomar la ultima palabra distintiva (suele ser la mas especifica)
+    for palabra in palabras_distintivas[-2:]:
+        for m in re.finditer(
+            rf"(\d{{1,2}})[\s\n\|]{{0,30}}{re.escape(palabra)}|{re.escape(palabra)}[\s\n\|]{{0,30}}(\d{{1,2}})",
+            texto, re.IGNORECASE,
+        ):
+            try:
+                n = int(m.group(1) or m.group(2))
+                if 1 <= n <= 30:
+                    return n
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+def _ordenar_rtm_personal_por_pdf(items: list[dict], full_text: str) -> list[dict]:
+    """
+    Ordena items de rtm_personal segun el N° que aparece en el PDF.
+    Los items cuyo numero no se puede inferir van al final manteniendo orden relativo.
+    Efecto: el orden final coincide con el del documento, independiente de si
+    vinieron de la primera pasada o del retry.
+    """
+    if not items:
+        return items
+    indexed: list[tuple[int, int, dict]] = []  # (numero, orden_original, item)
+    for idx, item in enumerate(items):
+        num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
+        # Los que no tienen num detectado van al final (99)
+        indexed.append((num if num is not None else 99, idx, item))
+    indexed.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in indexed]
 
 
 def _numeros_faltantes(texto: str, items_extraidos: list[dict]) -> list[int]:
@@ -1388,6 +1431,12 @@ def extraer_bases(
 
     # Post-proceso: deduplicar personal y limpiar entradas vacías
     resultado["rtm_personal"] = _dedup_personal(resultado["rtm_personal"])
+
+    # Ordenar por N° del PDF para que los items del retry queden en su posicion
+    # natural (el retry concatena al final, lo que desordena la tabla final).
+    resultado["rtm_personal"] = _ordenar_rtm_personal_por_pdf(
+        resultado["rtm_personal"], full_text,
+    )
 
     # Cruce capacitación → rtm_personal por cargo normalizado
     if _capacitaciones_raw:
