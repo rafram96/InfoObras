@@ -21,6 +21,68 @@ logger = logging.getLogger(__name__)
 # Donde se guarda el raw del LLM cuando la reparacion falla — para debug.
 _LLM_ERRORS_DIR = Path("data/llm_errors")
 
+# Donde se guarda CADA llamada LLM (prompt + raw + metadatos) para auditoria.
+# Permite ver exactamente que vio y que respondio el modelo en cada paso.
+_LLM_CALLS_DIR = Path("data/llm_calls")
+
+
+def _guardar_call_llm(
+    block_type: str,
+    page_range: tuple,
+    prompt: str,
+    raw_response: str,
+    usage: dict,
+    elapsed_s: float,
+    num_ctx: int,
+    parsed_ok: bool,
+    items_extracted: int,
+    error: Optional[str] = None,
+) -> Optional[Path]:
+    """
+    Guarda un dump completo de una llamada LLM para auditoria/debug.
+    Usa el contextvar job_id del logger para organizar por job.
+    Se invoca SIEMPRE, exitosa o no.
+    """
+    try:
+        # Intentar leer job_id del contextvar de src.api.main (si esta importado)
+        job_id = None
+        try:
+            from src.api.main import _JOB_ID_CTX
+            job_id = _JOB_ID_CTX.get()
+        except Exception:
+            pass
+
+        base = _LLM_CALLS_DIR / (job_id or "sin_job")
+        base.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        pags = f"{page_range[0]}-{page_range[1]}" if len(page_range) >= 2 else "x"
+        path = base / f"{ts}_{block_type}_pags_{pags}.json"
+
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "job_id": job_id,
+            "block_type": block_type,
+            "page_range": list(page_range),
+            "elapsed_s": round(elapsed_s, 2),
+            "num_ctx": num_ctx,
+            "prompt_chars": len(prompt),
+            "prompt_tokens_est": len(prompt) // 3,
+            "usage": usage,
+            "parsed_ok": parsed_ok,
+            "items_extracted": items_extracted,
+            "error": error,
+            "prompt": prompt,
+            "raw_response": raw_response,
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return path
+    except Exception as e:
+        logger.warning(f"No se pudo guardar LLM call a disco: {e}")
+        return None
+
 _client: Optional[OpenAI] = None
 
 
@@ -174,6 +236,32 @@ def _es_respuesta_fabricada(raw_response: str) -> bool:
 
 def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
     """
+    Wrapper que invoca _extraer_bloque_impl y SIEMPRE guarda un dump del
+    prompt + raw response + metadatos en data/llm_calls/{job_id}/ para
+    auditoria y debug. Util cuando el LLM extrae pocos cargos, alucina,
+    o responde raro — se puede inspeccionar exactamente que paso.
+    """
+    result, diag = _extraer_bloque_impl(block)
+    try:
+        _guardar_call_llm(
+            block_type=block.block_type,
+            page_range=block.page_range,
+            prompt=diag.get("prompt_enviado", ""),
+            raw_response=diag.get("raw_response", ""),
+            usage=diag.get("usage", {}),
+            elapsed_s=diag.get("elapsed_s", 0.0),
+            num_ctx=QWEN_NUM_CTX,
+            parsed_ok=bool(diag.get("parsed_ok")),
+            items_extracted=int(diag.get("items_extracted", 0) or 0),
+            error=diag.get("error") or None,
+        )
+    except Exception as e:
+        logger.debug(f"No se pudo guardar dump LLM: {e}")
+    return result, diag
+
+
+def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
+    """
     Envía un bloque ya clasificado a Qwen y retorna el JSON extraído
     junto con información diagnóstica de la interacción.
 
@@ -202,6 +290,7 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
 
     prompt = prompt_template.format(texto=block.text)
     diag["prompt_chars"] = len(prompt)
+    diag["prompt_enviado"] = prompt  # para dump a disco
 
     # Estimacion conservadora: 1 token ≈ 3 chars en espanol con numeros/puntuacion
     approx_tokens = len(prompt) // 3
@@ -243,12 +332,18 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
 
     raw = response.choices[0].message.content.strip()
     diag["raw_response"] = raw
+    diag["elapsed_s"] = elapsed
 
     # ── Métricas de rendimiento ──────────────────────────────────────────
     usage = getattr(response, "usage", None)
     prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
     completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
     total_tokens = prompt_tokens + completion_tokens
+    diag["usage"] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
 
     # Velocidad de prefill (prompt processing) — indicador real de GPU vs CPU
     # GPU 14b: ~300-1000 tok/s prefill | CPU/RAM: ~30-100 tok/s

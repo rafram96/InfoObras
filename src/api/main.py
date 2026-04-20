@@ -1573,6 +1573,57 @@ async def get_job_log(job_id: str):
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 
+@app.get("/api/jobs/{job_id}/llm-calls", tags=["Jobs"])
+async def list_llm_calls(job_id: str):
+    """
+    Lista los dumps de cada llamada LLM (Qwen 14B) realizada durante el job.
+    Cada dump contiene prompt + raw_response + usage + metadatos.
+    Util para diagnosticar alucinaciones, truncamientos o respuestas raras.
+    """
+    calls_dir = Path("data/llm_calls") / job_id
+    if not calls_dir.exists():
+        return {"calls": []}
+
+    calls = []
+    for f in sorted(calls_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            calls.append({
+                "filename": f.name,
+                "timestamp": data.get("timestamp"),
+                "block_type": data.get("block_type"),
+                "page_range": data.get("page_range"),
+                "prompt_chars": data.get("prompt_chars"),
+                "prompt_tokens_est": data.get("prompt_tokens_est"),
+                "num_ctx": data.get("num_ctx"),
+                "elapsed_s": data.get("elapsed_s"),
+                "usage": data.get("usage"),
+                "parsed_ok": data.get("parsed_ok"),
+                "items_extracted": data.get("items_extracted"),
+                "error": data.get("error"),
+            })
+        except Exception as e:
+            logger.warning("list_llm_calls: error leyendo %s: %s", f, e)
+    return {"calls": calls}
+
+
+@app.get("/api/jobs/{job_id}/llm-calls/{filename}", tags=["Jobs"])
+async def get_llm_call(job_id: str, filename: str):
+    """Retorna el dump completo (prompt + raw_response) de una llamada LLM."""
+    from fastapi.responses import JSONResponse
+
+    if ".." in filename or "/" in filename or "\\" in filename or not filename.endswith(".json"):
+        raise HTTPException(400, "Nombre de archivo inválido")
+    path = Path("data/llm_calls") / job_id / filename
+    if not path.exists():
+        raise HTTPException(404, "Dump no encontrado")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo dump: {e}")
+    return JSONResponse(data)
+
+
 @app.get("/api/jobs/{job_id}/files", tags=["Jobs"])
 async def list_job_files(job_id: str):
     """
@@ -1774,6 +1825,9 @@ async def delete_job(job_id: str):
     job_log = _JOB_LOGS_DIR / f"job-{job_id}.log"
     if job_log.exists():
         job_log.unlink(missing_ok=True)
+    llm_calls_dir = Path("data/llm_calls") / job_id
+    if llm_calls_dir.exists():
+        shutil.rmtree(llm_calls_dir, ignore_errors=True)
     return {"ok": True}
 
 
