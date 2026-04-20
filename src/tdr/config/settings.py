@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # ── Motor OCR ─────────────────────────────────────────────────────────────────
@@ -15,9 +16,14 @@ QWEN_MAX_TOKENS      = 8192        # tokens MÁXIMOS de respuesta
 QWEN_TIMEOUT         = 300
 # Ventana de contexto (input+output). Ollama default es 4096 tokens (~12k chars),
 # lo que TRUNCA prompts largos silenciosamente y causa alucinaciones ("Gerente de
-# Proyecto" en vez de "GERENTE DE CONTRATO", tipo_obra inventado, etc.). Qwen 2.5
-# soporta 128k nativos; 16384 (≈48k chars) cubre 9+ páginas de tablas TDR enteras.
-QWEN_NUM_CTX         = 16384
+# Proyecto" en vez de "GERENTE DE CONTRATO", tipo_obra inventado, etc.).
+#
+# Qwen 2.5:14b soporta 128k tokens nativos. Recomendaciones por VRAM:
+#   - 16GB VRAM (Quadro RTX 5000, etc.): 12288 (~36k chars) → default seguro
+#   - 24GB+ VRAM: 16384-32768 (cubre TDRs gigantes sin truncar)
+#   - Si hay OOM (out of memory en GPU): bajar a 8192
+# Override via env: QWEN_NUM_CTX=16384 (por si quieres subir sin tocar codigo)
+QWEN_NUM_CTX         = int(os.getenv("QWEN_NUM_CTX", "12288"))
 
 # ── Qwen VL (lectura visual de tablas) ──────────────────────────────────────
 QWEN_VL_MODEL   = "qwen2.5vl:7b"
