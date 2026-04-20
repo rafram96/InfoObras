@@ -37,6 +37,8 @@ def _guardar_call_llm(
     parsed_ok: bool,
     items_extracted: int,
     error: Optional[str] = None,
+    model: Optional[str] = None,
+    response_model: Optional[str] = None,
 ) -> Optional[Path]:
     """
     Guarda un dump completo de una llamada LLM para auditoria/debug.
@@ -65,6 +67,8 @@ def _guardar_call_llm(
             "page_range": list(page_range),
             "elapsed_s": round(elapsed_s, 2),
             "num_ctx": num_ctx,
+            "model_solicitado": model,           # QWEN_MODEL del .env
+            "model_respondido": response_model,   # modelo que Ollama reporta
             "prompt_chars": len(prompt),
             "prompt_tokens_est": len(prompt) // 3,
             "usage": usage,
@@ -254,6 +258,8 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
             parsed_ok=bool(diag.get("parsed_ok")),
             items_extracted=int(diag.get("items_extracted", 0) or 0),
             error=diag.get("error") or None,
+            model=QWEN_MODEL,
+            response_model=diag.get("response_model"),
         )
     except Exception as e:
         logger.debug(f"No se pudo guardar dump LLM: {e}")
@@ -333,6 +339,8 @@ def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
     raw = response.choices[0].message.content.strip()
     diag["raw_response"] = raw
     diag["elapsed_s"] = elapsed
+    # Modelo que Ollama realmente resolvio (confirma si tomo el modelo nuevo o cacheado)
+    diag["response_model"] = getattr(response, "model", None)
 
     # ── Métricas de rendimiento ──────────────────────────────────────────
     usage = getattr(response, "usage", None)

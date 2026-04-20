@@ -1596,6 +1596,8 @@ async def list_llm_calls(job_id: str):
                 "prompt_chars": data.get("prompt_chars"),
                 "prompt_tokens_est": data.get("prompt_tokens_est"),
                 "num_ctx": data.get("num_ctx"),
+                "model_solicitado": data.get("model_solicitado"),
+                "model_respondido": data.get("model_respondido"),
                 "elapsed_s": data.get("elapsed_s"),
                 "usage": data.get("usage"),
                 "parsed_ok": data.get("parsed_ok"),
