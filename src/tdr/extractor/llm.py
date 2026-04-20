@@ -247,24 +247,47 @@ def extraer_bloque(block: Block) -> tuple[Optional[dict], dict]:
     )
 
     # Detectar respuestas fabricadas en el preámbulo (texto ANTES del JSON).
-    # No se verifica el JSON completo porque los valores extraídos del documento
-    # pueden contener legítimamente palabras como "ejemplo" en las descripciones.
-    # El LLM a veces añade un párrafo meta-comentario DESPUÉS del JSON válido
-    # ("Este es un ejemplo para el primer cargo...") que no debe descartar el resultado.
+    # Pero SOLO descartar si el JSON resultante también está vacío — de lo contrario
+    # el LLM razonó sobre no fabricar y aún así extrajo datos válidos, que son los
+    # que importan. Los validadores _marcar_cargos_no_en_fuente y
+    # _detectar_copy_paste_fabricacion en pipeline.py se encargan de marcar items
+    # sospechosos SIN descartar toda la respuesta.
     _pre_json = raw[: raw.find("{")] if "{" in raw else raw
     if _es_respuesta_fabricada(_pre_json):
-        diag["error"] = "Respuesta fabricada detectada (ejemplo/plantilla)"
-        logger.warning(
-            f"[llm] Bloque '{block.block_type}' págs {block.page_range}: "
-            f"respuesta fabricada descartada"
-        )
-        # Devolver resultado vacío según tipo
-        empty = {
-            "rtm_postor": {"items_concurso": []},
-            "rtm_personal": {"personal_clave": []},
-            "factores_evaluacion": {"factores_evaluacion": []},
-        }.get(block.block_type, {})
-        return empty, diag
+        # Verificar si el JSON resultante tiene items reales
+        json_vacio = True
+        try:
+            _peek = json.loads(_limpiar_respuesta(raw))
+            items_peek = (
+                _peek.get("items_concurso")
+                or _peek.get("personal_clave")
+                or _peek.get("factores_evaluacion")
+                or []
+            )
+            if isinstance(items_peek, list) and len(items_peek) > 0:
+                json_vacio = False
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            # Si no parseó, dejar que el flujo caiga al reparador de abajo
+            json_vacio = False
+
+        if json_vacio:
+            diag["error"] = "Respuesta fabricada detectada (JSON vacio + preambulo sospechoso)"
+            logger.warning(
+                f"[llm] Bloque '{block.block_type}' págs {block.page_range}: "
+                f"respuesta fabricada descartada (preambulo + JSON vacio)"
+            )
+            empty = {
+                "rtm_postor": {"items_concurso": []},
+                "rtm_personal": {"personal_clave": []},
+                "factores_evaluacion": {"factores_evaluacion": []},
+            }.get(block.block_type, {})
+            return empty, diag
+        else:
+            logger.info(
+                f"[llm] Bloque '{block.block_type}' págs {block.page_range}: "
+                f"preambulo con patrones de fabricacion PERO JSON con items — "
+                f"procediendo (validadores deterministicos filtraran alucinaciones)"
+            )
 
     raw = _limpiar_respuesta(raw)
     diag["cleaned_response"] = raw
