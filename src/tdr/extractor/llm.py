@@ -229,48 +229,68 @@ def _guardar_raw_error(
         return None
 
 
-_PROMPT_RETRY_FALTANTES = """Acabas de extraer {n_extraidos} cargos de la tabla de personal clave (B.1 + B.2) pero la tabla tiene {n_esperados} filas numeradas. {mencion_numeros}
+_PROMPT_RETRY_FALTANTES = """Ya extrajiste {n_extraidos} cargos pero {mencion_numeros}
 
-CARGOS YA EXTRAIDOS (no los repitas — busca SOLO los que NO estan en esta lista):
+CARGOS YA EXTRAIDOS (NO los repitas):
 {cargos_extraidos}
 
-Busca en el texto los cargos que FALTAN — pueden estar:
-- Al INICIO de la tabla (ej: GERENTE DE CONTRATO, JEFE DE SUPERVISION, INGENIERO DE CAMPO en pags iniciales).
-- Al FINAL (ej: ESPECIALISTA EN INSTALACIONES ELECTROMECANICAS) con OCR fragmentado.
-- En paginas intermedias donde el OCR partio palabras ("GERENTEDE", "INGENIEROElectricista").
+Ahora extrae los cargos FALTANTES con la MISMA CALIDAD que una primera pasada — no escatimes campos, rellena TODO como si nunca hubieras visto el documento.
 
-Ignora: "MANTENIMIENTO VIAL", "CONCURSO PUBLICO", numeros de pagina, footnotes como "75", "96".
+REGLAS CRITICAS PARA LOS FALTANTES:
 
-SCHEMA OBLIGATORIO (NO INVENTES CAMPOS — usa EXACTAMENTE estos nombres):
+1. profesiones_aceptadas → SOLO la columna FORMACION ACADEMICA de B.1.
+   Son TITULOS universitarios completos: "Ingeniero Civil", "Arquitecto",
+   "Ingeniero Sanitario", "Tecnologo Medico", "Medico", "Ingeniero
+   Electromecanico", "Ingeniero de Minas", etc. NUNCA solo "Ingeniero"
+   a secas ni "Arquitecto de Obra" (eso es un cargo).
+
+2. cargos_similares_validos → SOLO la columna TRABAJOS O PRESTACIONES de B.2.
+   Son PUESTOS: "Especialista en X", "Jefe de Y", "Supervisor de Z",
+   "Coordinador", "Gerente de Obra", etc. Copia TODOS los puestos listados
+   con "y/o" — no resumas a "Especialista, Jefe" a secas.
+
+3. descripcion → copia LITERAL de la columna TRABAJOS O PRESTACIONES,
+   completa, no la trunques.
+
+4. NO mezcles filas: las profesiones de un cargo estan SOLO en SU propia
+   fila de B.1. No traigas "Tecnologo Medico" para un cargo que no sea
+   EQUIPAMIENTO HOSPITALARIO.
+
+5. Las filas que faltan suelen tener OCR fragmentado: palabras pegadas
+   ("GERENTEDE"), partidas en varias lineas, footnotes numericos como "75"
+   intercalados. Ignora ruido: "MANTENIMIENTO VIAL", "CONCURSO PUBLICO",
+   numeros de pagina, acreditacion textos.
+
+SCHEMA OBLIGATORIO (respeta EXACTAMENTE los nombres de campo):
 {{
   "personal_clave": [
     {{
-      "numero_fila": <N° EXACTO, ej: 1, 2, 17>,
+      "numero_fila": <N° EXACTO de la columna N° de B.1, ej: 1, 2, 17>,
       "cargo": "NOMBRE EXACTO DEL CARGO COMO APARECE",
-      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto", ...],
+      "profesiones_aceptadas": ["Titulo completo 1", "Titulo completo 2", ...],
       "anos_colegiado": null,
       "experiencia_minima": {{
         "cantidad": <numero de meses>,
         "unidad": "meses",
-        "descripcion": "<copia literal de la columna TRABAJOS O PRESTACIONES>",
-        "cargos_similares_validos": ["..."],
+        "descripcion": "<copia COMPLETA de la columna TRABAJOS O PRESTACIONES>",
+        "cargos_similares_validos": ["Puesto 1 de B.2", "Puesto 2 de B.2", ...],
         "puntaje_por_experiencia": null,
         "puntaje_maximo": null
       }},
       "tipo_obra_valido": "establecimientos de salud",
       "tiempo_adicional_factores": null,
       "capacitacion": {{"tema": null, "tipo": null, "duracion_minima_horas": null, "es_factor_evaluacion": false}},
-      "pagina": <numero>
+      "pagina": <numero de pagina>
     }}
   ]
 }}
 
-NO uses "formacion_academica" ni "titulo_profesional" ni otros nombres. Solo el schema arriba.
+NO uses "formacion_academica", "titulo_profesional" ni otros nombres inventados.
 
 TEXTO DEL DOCUMENTO:
 {texto}
 
-Responde SOLO JSON con los FALTANTES (sin duplicar los ya extraidos):
+Responde SOLO JSON con los FALTANTES rellenados COMPLETAMENTE (no minimal):
 /no_think
 """.strip()
 

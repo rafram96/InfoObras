@@ -404,18 +404,22 @@ def _es_profesion_real(texto: str) -> bool:
         return False
     # Si empieza con un prefijo de CARGO, NO es profesion (contaminacion de B.2)
     if any(t.startswith(p) for p in _PREFIJOS_CARGO):
-        # Excepcion: "Ingeniero de campo" es cargo, "Ingeniero Civil" es profesion
-        # Verificamos si contiene algun titulo profesional dentro
         return False
-    # Si empieza con un prefijo de PROFESION, sí es profesion
-    if any(t.startswith(p) for p in _PREFIJOS_PROFESION):
-        # Pero "Ingeniero de campo" / "Arquitecto de obra" son cargos, no profesiones
-        if any(f"{p} de" in t[:30] and not any(tit in t for tit in ("civil", "sanitario", "electrico", "mecanico", "ambiental"))
-               for p in ("ingeniero", "arquitecto")):
-            # Hmm caso borderline, permitir
-            pass
-        return True
-    return False
+    # Patrones de CARGO aunque empiecen con "Ingeniero"/"Arquitecto":
+    # "Ingeniero Supervisor de Obra", "Arquitecto de Campo", "Ingeniero de
+    # campo y de obra", etc. La marca son los sufijos "de obra/campo/proyecto/
+    # contrato/supervisi0n/equipo".
+    _CARGO_SUFIJOS = (
+        "de obra", "de campo", "de proyecto", "de contrato",
+        "de supervisi", "de equipo", "supervisor", "hospitalario de obra",
+    )
+    if any(suf in t for suf in _CARGO_SUFIJOS):
+        return False
+    # "Ingeniero" a secas (sin especialidad) no es una profesion valida
+    if t in ("ingeniero", "arquitecto", "supervisor", "tecnologo", "tecnólogo"):
+        return False
+    # Si empieza con un prefijo de PROFESION, si es profesion
+    return any(t.startswith(p) for p in _PREFIJOS_PROFESION)
 
 
 def _limpiar_profesiones_y_cargos(item: dict) -> dict:
