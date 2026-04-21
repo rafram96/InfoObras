@@ -1396,6 +1396,13 @@ def extraer_bases(
                             numeros_faltantes=nums_faltantes,
                         )
                         if items_nuevos:
+                            # Aplicar filtro de contaminacion de columnas
+                            # tambien a items del retry (antes se agregaban
+                            # directo con profesiones = cargos de B.2).
+                            items_nuevos = [
+                                _limpiar_profesiones_y_cargos(it)
+                                for it in items_nuevos
+                            ]
                             items = items + items_nuevos
                             logger.info(
                                 "[pipeline] Retry recupero %d cargo(s) → total %d",
@@ -1433,6 +1440,41 @@ def extraer_bases(
     resultado["rtm_personal"] = _ordenar_rtm_personal_por_pdf(
         resultado["rtm_personal"], full_text,
     )
+
+    # Pasada dedicada a B.1: una llamada LLM enfocada EXCLUSIVAMENTE en extraer
+    # profesiones correctas por numero_fila. Corrige errores del LLM principal
+    # y del retry:
+    # - Profesiones inventadas ("Ingeniero Geotecnico" en ESTRUCTURAS)
+    # - Cross-fila ("Tecnologo Medico" en COMUNICACIONES)
+    # - Cargos mezclados como profesiones ("Gerente de Obra" en GERENTE DE CONTRATO)
+    # - Profesiones vacias o a secas ("Ingeniero" sin especialidad)
+    if resultado["rtm_personal"]:
+        try:
+            from src.tdr.extractor.llm import reextraer_profesiones_b1
+            profs_por_fila = reextraer_profesiones_b1(
+                full_text, resultado["rtm_personal"],
+            )
+            if profs_por_fila:
+                reemplazos = 0
+                for item in resultado["rtm_personal"]:
+                    num = item.get("numero_fila")
+                    if num is None:
+                        num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
+                    if num in profs_por_fila and profs_por_fila[num]:
+                        nuevas_profs = profs_por_fila[num]
+                        # Aplicar filtro tambien a las nuevas profesiones
+                        nuevas_profs_limpias = [
+                            p for p in nuevas_profs if _es_profesion_real(p)
+                        ]
+                        if nuevas_profs_limpias:
+                            item["profesiones_aceptadas"] = nuevas_profs_limpias
+                            reemplazos += 1
+                logger.info(
+                    "[pipeline] Profesiones B.1 reextraidas: %d/%d items actualizados",
+                    reemplazos, len(resultado["rtm_personal"]),
+                )
+        except Exception as e:
+            logger.warning("[pipeline] Reextraccion de profesiones B.1 fallo: %s", e)
 
     # Cruce capacitación → rtm_personal por cargo normalizado
     if _capacitaciones_raw:

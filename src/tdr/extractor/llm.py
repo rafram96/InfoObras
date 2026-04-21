@@ -295,6 +295,129 @@ Responde SOLO JSON con los FALTANTES rellenados COMPLETAMENTE (no minimal):
 """.strip()
 
 
+_PROMPT_PROFESIONES_ONLY = """Abajo hay texto OCR de una tabla de TDR peruano "B.1 CALIFICACION DEL PERSONAL CLAVE". La tabla tiene filas numeradas y columnas:
+  N° | CARGO Y/O RESPONSABILIDAD | FORMACION ACADEMICA | GRADO O TITULO PROFESIONAL
+
+Tu tarea: para CADA fila numerada, extrae SOLO las profesiones de la columna FORMACION ACADEMICA (titulos universitarios).
+
+REGLAS ESTRICTAS:
+- Una profesion es un TITULO UNIVERSITARIO completo. Ejemplos validos:
+  "Ingeniero Civil", "Arquitecto", "Ingeniero Sanitario", "Tecnologo Medico",
+  "Medico", "Ingeniero Electromecanico", "Ingeniero Mecatronico",
+  "Ingeniero de Minas", "Licenciado en Ciencias Ambientales".
+- NUNCA uses solo "Ingeniero" o "Arquitecto" a secas — siempre con la especialidad.
+- NUNCA pongas cargos/puestos ("Gerente de Obra", "Especialista en X", "Jefe de Y",
+  "Coordinador", "Supervisor", "Arquitecto de Obra", "Ingeniero Supervisor").
+  Esos son cargos de OTRA tabla (B.2) y NO se incluyen aqui.
+- Las profesiones de una fila estan SOLO en la columna FORMACION ACADEMICA de esa
+  fila especifica. NUNCA mezcles con profesiones de filas vecinas.
+- El OCR puede tener palabras pegadas ("GERENTEDE") o partidas en varias lineas.
+  Reconstruye la profesion completa antes de extraerla.
+- Si la columna FORMACION ACADEMICA dice "X y/o Y y/o Z", extrae los 3: [X, Y, Z].
+
+Las filas tipicas en TDR de establecimientos de salud suelen incluir:
+1. GERENTE DE CONTRATO → Ingeniero Civil, Arquitecto
+2. JEFE DE SUPERVISION → Ingeniero Civil, Arquitecto
+3. INGENIERO DE CAMPO → Ingeniero Civil
+(El resto varia segun el TDR; respeta SIEMPRE lo que dice el texto.)
+
+TEXTO DEL DOCUMENTO:
+{texto}
+
+Responde SOLO JSON. Formato:
+{{
+  "profesiones_por_fila": {{
+    "1": ["profesion 1", "profesion 2"],
+    "2": ["..."],
+    ...
+  }}
+}}
+/no_think
+""".strip()
+
+
+def reextraer_profesiones_b1(texto_fuente: str, items: list) -> dict[int, list[str]]:
+    """
+    Una pasada enfocada exclusivamente en la tabla B.1 para extraer profesiones
+    limpias. Complementa la extraccion principal — corrige errores como mezcla
+    con cargos de B.2 o cross-fila (Tecnologo Medico en Comunicaciones).
+
+    Retorna dict {numero_fila: [profesiones]}. El caller fusiona con items
+    existentes por numero_fila.
+    """
+    if not items:
+        return {}
+    n_esperados = len(items)
+    prompt = _PROMPT_PROFESIONES_ONLY.format(texto=texto_fuente[:QWEN_NUM_CTX * 3])
+
+    logger.info(
+        f"[llm-profesiones] Pasada dedicada a B.1 para {n_esperados} cargos"
+    )
+
+    try:
+        client = _get_client()
+        t0 = time.perf_counter()
+        response = client.chat.completions.create(
+            model=QWEN_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=QWEN_MAX_TOKENS,
+            extra_body={
+                "keep_alive": "10m",
+                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
+            },
+        )
+        elapsed = time.perf_counter() - t0
+    except Exception as e:
+        logger.warning(f"[llm-profesiones] Qwen fallo: {e}")
+        return {}
+
+    raw = response.choices[0].message.content.strip()
+    cleaned = _limpiar_respuesta(raw)
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = _reparar_json(cleaned) or {}
+
+    profs_por_fila = data.get("profesiones_por_fila", {}) if isinstance(data, dict) else {}
+    # Normalizar keys a int
+    resultado: dict[int, list[str]] = {}
+    for k, v in profs_por_fila.items():
+        try:
+            n = int(k)
+            if isinstance(v, list):
+                resultado[n] = [str(p).strip() for p in v if isinstance(p, str) and p.strip()]
+        except (ValueError, TypeError):
+            continue
+
+    try:
+        _guardar_call_llm(
+            block_type="rtm_personal_profesiones_b1",
+            page_range=(0, 0),
+            prompt=prompt,
+            raw_response=raw,
+            usage={
+                "prompt_tokens": getattr(getattr(response, "usage", None), "prompt_tokens", 0),
+                "completion_tokens": getattr(getattr(response, "usage", None), "completion_tokens", 0),
+            },
+            elapsed_s=elapsed,
+            num_ctx=QWEN_NUM_CTX,
+            parsed_ok=bool(resultado),
+            items_extracted=len(resultado),
+            error=None if resultado else "sin profesiones extraidas",
+            model=QWEN_MODEL,
+            response_model=getattr(response, "model", None),
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        f"[llm-profesiones] {len(resultado)} filas con profesiones en {elapsed:.1f}s"
+    )
+    return resultado
+
+
 def retry_cargos_faltantes(
     texto_fuente: str,
     items_ya_extraidos: list,
