@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -330,6 +331,95 @@ def _inferir_numero_cargo(cargo: str, texto: str) -> Optional[int]:
             except (ValueError, TypeError):
                 continue
     return None
+
+
+def _mergear_vl_con_items(
+    items: list[dict],
+    vl_data: dict,
+    full_text: str,
+) -> None:
+    """
+    Mergea los datos extraidos por Qwen-VL (JSON estructurado de B.1 y B.2)
+    con los items del pipeline textual. Muta `items` in-place.
+
+    Estrategia:
+    - Para cada item, buscar su fila VL por numero_fila (con fallback a
+      inferencia desde el cargo).
+    - Si VL tiene profesiones → REEMPLAZA las del textual (VL > texto para
+      este campo porque Qwen-VL ve el layout de la tabla).
+    - Si VL tiene cargos_similares → REEMPLAZA los del textual.
+    - Si VL tiene tiempo_meses y el textual no → rellenar.
+    - Aplicar filtros _es_profesion_real y _es_profesion_derivada_del_cargo
+      a las profesiones del VL (VL tambien puede equivocarse).
+    - Si VL devuelve listas vacias, mantener el textual.
+    """
+    b1_por_num = {f.get("numero"): f for f in vl_data.get("b1", []) if isinstance(f, dict)}
+    b2_por_num = {f.get("numero"): f for f in vl_data.get("b2", []) if isinstance(f, dict)}
+
+    actualizados_profs = 0
+    actualizados_cargos = 0
+
+    for item in items:
+        num = item.get("numero_fila")
+        if num is None:
+            num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
+        if num is None:
+            continue
+
+        cargo_item = item.get("cargo", "")
+
+        # ── Profesiones desde B.1 VL ──────────────────────────────────────
+        fila_b1 = b1_por_num.get(num)
+        if fila_b1:
+            profs_vl = fila_b1.get("profesiones") or []
+            profs_vl_limpias = [
+                p for p in profs_vl
+                if isinstance(p, str)
+                and _es_profesion_real(p)
+                and not _es_profesion_derivada_del_cargo(p, cargo_item)
+            ]
+            if profs_vl_limpias:
+                item["profesiones_aceptadas"] = profs_vl_limpias
+                item["_vl_source_b1"] = True
+                actualizados_profs += 1
+
+        # ── Cargos similares desde B.2 VL ─────────────────────────────────
+        fila_b2 = b2_por_num.get(num)
+        if fila_b2:
+            cargos_vl = fila_b2.get("cargos_similares") or []
+            cargos_vl_limpios = [
+                str(c).strip() for c in cargos_vl
+                if isinstance(c, str) and c.strip()
+            ]
+            if cargos_vl_limpios:
+                exp_min = item.get("experiencia_minima") or {}
+                if not isinstance(exp_min, dict):
+                    exp_min = {}
+                exp_min["cargos_similares_validos"] = cargos_vl_limpios
+                item["experiencia_minima"] = exp_min
+                item["_vl_source_b2"] = True
+                actualizados_cargos += 1
+
+            # Tiempo meses: solo rellenar si falta o no coincide con VL
+            tiempo_vl = fila_b2.get("tiempo_meses")
+            if isinstance(tiempo_vl, int) and tiempo_vl > 0:
+                exp_min = item.get("experiencia_minima") or {}
+                if not isinstance(exp_min, dict):
+                    exp_min = {}
+                if not exp_min.get("cantidad"):
+                    exp_min["cantidad"] = tiempo_vl
+                    exp_min["unidad"] = "meses"
+                    item["experiencia_minima"] = exp_min
+
+            # Tipo obra: rellenar si falta
+            tipo_vl = fila_b2.get("tipo_obra")
+            if tipo_vl and not item.get("tipo_obra_valido"):
+                item["tipo_obra_valido"] = tipo_vl
+
+    logger.info(
+        "[pipeline] Merge VL: %d items con profesiones B.1, %d con cargos B.2 reemplazados",
+        actualizados_profs, actualizados_cargos,
+    )
 
 
 def _ordenar_rtm_personal_por_pdf(items: list[dict], full_text: str) -> list[dict]:
@@ -1278,6 +1368,37 @@ def extraer_bases(
     pages  = parse_full_text(full_text)
     scored = [score_page(p) for p in pages]
 
+    # ── Extraccion VL estructurada de B.1 y B.2 (opt-in) ──────────────────
+    # Si USE_VL_TDR_EXTRACTION=true en env, pide a Qwen-VL extraer las tablas
+    # B.1 (profesiones) y B.2 (cargos similares) directamente como JSON.
+    # Mergea al final con los items del pipeline textual. Ataca cross-fila,
+    # profesiones incompletas, y cargos similares vagos.
+    vl_data: dict = {"b1": [], "b2": [], "diagnostico": {}}
+    if pdf_path and os.getenv("USE_VL_TDR_EXTRACTION", "false").lower() == "true":
+        try:
+            from src.tdr.tables.vl_extract_tdr_client import extraer_tdr_con_vl
+            # Detectar paginas rtm_personal como fallback del detector
+            _scored_pre = [score_page(p) for p in pages]
+            _bloques_pre = group_into_blocks(_scored_pre)
+            paginas_rtm = sorted({
+                p.page_num for b in _bloques_pre
+                if b.block_type == "rtm_personal"
+                for p in b.pages
+            })
+            texto_por_pagina = {p.page_num: p.text for p in pages}
+            logger.info(
+                "[pipeline] VL TDR extraction habilitada — invocando worker"
+            )
+            vl_data = extraer_tdr_con_vl(
+                pdf_path, texto_por_pagina, paginas_rtm,
+            )
+            logger.info(
+                "[pipeline] VL TDR completado: B.1=%d filas, B.2=%d filas",
+                len(vl_data.get("b1", [])), len(vl_data.get("b2", [])),
+            )
+        except Exception as e:
+            logger.warning("[pipeline] VL TDR extraction fallo: %s", e)
+
     # ── Mejora de tablas (antes de agrupar bloques) ──────────────────────
     #    FASE VL: usa Qwen VL para leer tablas visualmente.
     #    Al terminar, descarga VL de Ollama para liberar VRAM antes de Qwen 14B.
@@ -1533,6 +1654,18 @@ def extraer_bases(
     resultado["rtm_personal"] = _ordenar_rtm_personal_por_pdf(
         resultado["rtm_personal"], full_text,
     )
+
+    # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa) ──
+    # Los datos VL son mas confiables en layout de tabla (no sufre cross-fila)
+    # por lo que REEMPLAZAMOS profesiones y cargos_similares con los del VL,
+    # con fallback al textual si VL no tiene esa fila.
+    if (vl_data.get("b1") or vl_data.get("b2")) and resultado["rtm_personal"]:
+        try:
+            _mergear_vl_con_items(
+                resultado["rtm_personal"], vl_data, full_text,
+            )
+        except Exception as e:
+            logger.warning("[pipeline] Merge VL+items fallo: %s", e)
 
     # Pasada dedicada a B.1: una llamada LLM enfocada EXCLUSIVAMENTE en extraer
     # profesiones correctas por numero_fila. Corrige errores del LLM principal
