@@ -395,6 +395,60 @@ _PREFIJOS_PROFESION = (
 )
 
 
+def _es_profesion_derivada_del_cargo(profesion: str, cargo: str) -> bool:
+    """
+    Detecta alucinaciones tipo "Ingeniero en <palabra del cargo>":
+    - Para 'ESPECIALISTA EN COSTOS, METRADOS Y VALORIZACIONES':
+        'Ingeniero en Costos' → True (derivado)
+        'Ingeniero Civil' → False (titulo real)
+    - Para 'ESPECIALISTA EN BIM': 'Ingeniero en BIM' → True
+    - Para 'ESPECIALISTA EN COMUNICACIONES': 'Ingeniero en Comunicaciones' → True
+    Son invenciones del LLM que no estan en la columna FORMACION ACADEMICA.
+    """
+    if not profesion or not cargo:
+        return False
+    p_norm = _normalizar_para_fuzzy(profesion).strip()
+    c_norm = _normalizar_para_fuzzy(cargo).strip()
+
+    # Solo considerar "Ingeniero en X" o "Ingeniero de X"
+    m = re.match(r"^(ingeniero|arquitecto)\s+(en|de)\s+(.{3,})$", p_norm)
+    if not m:
+        return False
+    sufijo = m.group(3).strip()
+    if len(sufijo) < 3:
+        return False
+
+    # Si el sufijo es una palabra clave tipica del cargo (costos, metrados, bim,
+    # comunicaciones, seguridad, calidad, etc.) Y NO es un apellido profesional
+    # real (civil, sanitario, electrico, etc.), entonces es derivacion.
+    titulos_validos = (
+        "civil", "sanitario", "electrico", "electricista", "mecanico",
+        "electromecanico", "electromecanico", "mecatronico", "electronico",
+        "industrial", "ambiental", "agricola", "agronomo", "geologo",
+        "geotecnico", "estructural", "hidraulico", "quimico", "informatico",
+        "telecomunicaciones", "sistemas", "seguridad laboral", "seguridad industrial",
+        "seguridad e higiene", "higiene y seguridad", "minas", "materiales",
+        "sistemas y computo", "electronico y telecomunicaciones",
+    )
+    if any(sufijo == t or sufijo.startswith(t + " ") for t in titulos_validos):
+        return False
+
+    # Si el sufijo contiene palabras del cargo → derivacion
+    # Extraer palabras significativas del cargo (sin "especialista", "en", "de")
+    stop = {"especialista", "en", "de", "la", "el", "y", "del"}
+    palabras_cargo = [
+        w for w in re.split(r"\s+", c_norm)
+        if len(w) >= 4 and w not in stop
+    ]
+    # Si cualquier palabra del sufijo coincide con palabra del cargo → derivacion
+    palabras_sufijo = [w for w in re.split(r"\s+|,", sufijo) if len(w) >= 4]
+    for w_suf in palabras_sufijo:
+        for w_car in palabras_cargo:
+            if w_suf == w_car or w_suf in w_car or w_car in w_suf:
+                return True
+    return False
+
+
 def _es_profesion_real(texto: str) -> bool:
     """True si `texto` parece un titulo universitario y NO un puesto de trabajo."""
     if not texto:
@@ -1503,14 +1557,21 @@ def extraer_bases(
                         continue
 
                     nuevas_profs = profs_por_fila[num]
-                    # Filtrar profesiones invalidas en AMBAS fuentes
-                    nuevas_limpias = [p for p in nuevas_profs if _es_profesion_real(p)]
+                    cargo_item = item.get("cargo", "")
+                    # Filtrar profesiones invalidas + alucinaciones derivadas del cargo
+                    nuevas_limpias = [
+                        p for p in nuevas_profs
+                        if _es_profesion_real(p)
+                        and not _es_profesion_derivada_del_cargo(p, cargo_item)
+                    ]
                     existentes = item.get("profesiones_aceptadas") or []
                     if not isinstance(existentes, list):
                         existentes = []
                     existentes_limpias = [
                         p for p in existentes
-                        if isinstance(p, str) and _es_profesion_real(p)
+                        if isinstance(p, str)
+                        and _es_profesion_real(p)
+                        and not _es_profesion_derivada_del_cargo(p, cargo_item)
                     ]
 
                     # MERGE: union de ambas fuentes para maximizar recall.

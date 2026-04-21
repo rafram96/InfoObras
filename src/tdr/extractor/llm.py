@@ -301,25 +301,47 @@ _PROMPT_PROFESIONES_ONLY = """Abajo hay texto OCR de una tabla de TDR peruano "B
 Tu tarea: para CADA fila numerada, extrae SOLO las profesiones de la columna FORMACION ACADEMICA (titulos universitarios).
 
 REGLAS ESTRICTAS:
-- Una profesion es un TITULO UNIVERSITARIO completo. Ejemplos validos:
+
+(1) Una profesion es un TITULO UNIVERSITARIO COPIADO LITERAL del texto. Ejemplos validos:
   "Ingeniero Civil", "Arquitecto", "Ingeniero Sanitario", "Tecnologo Medico",
   "Medico", "Ingeniero Electromecanico", "Ingeniero Mecatronico",
-  "Ingeniero de Minas", "Licenciado en Ciencias Ambientales".
-- NUNCA uses solo "Ingeniero" o "Arquitecto" a secas — siempre con la especialidad.
-- NUNCA pongas cargos/puestos ("Gerente de Obra", "Especialista en X", "Jefe de Y",
-  "Coordinador", "Supervisor", "Arquitecto de Obra", "Ingeniero Supervisor").
-  Esos son cargos de OTRA tabla (B.2) y NO se incluyen aqui.
-- Las profesiones de una fila estan SOLO en la columna FORMACION ACADEMICA de esa
-  fila especifica. NUNCA mezcles con profesiones de filas vecinas.
-- El OCR puede tener palabras pegadas ("GERENTEDE") o partidas en varias lineas.
-  Reconstruye la profesion completa antes de extraerla.
-- Si la columna FORMACION ACADEMICA dice "X y/o Y y/o Z", extrae los 3: [X, Y, Z].
+  "Ingeniero de Minas", "Ingeniero Agricola", "Ingeniero Geologo".
 
-Las filas tipicas en TDR de establecimientos de salud suelen incluir:
-1. GERENTE DE CONTRATO → Ingeniero Civil, Arquitecto
-2. JEFE DE SUPERVISION → Ingeniero Civil, Arquitecto
-3. INGENIERO DE CAMPO → Ingeniero Civil
-(El resto varia segun el TDR; respeta SIEMPRE lo que dice el texto.)
+(2) NUNCA inventes profesiones DERIVADAS DEL NOMBRE DEL CARGO. Ejemplos de
+    alucinaciones PROHIBIDAS:
+  - Para "ESPECIALISTA EN COSTOS..." NO inventar "Ingeniero en Costos" o
+    "Ingeniero en Valorizaciones" si NO aparece literalmente.
+  - Para "ESPECIALISTA EN BIM" NO inventar "Ingeniero en BIM" si NO aparece.
+  - Para "ESPECIALISTA EN COMUNICACIONES" NO inventar "Ingeniero en
+    Comunicaciones" si NO aparece.
+  Si dudas si algo aparece literal, mejor NO la incluyas.
+
+(3) NUNCA uses solo "Ingeniero" a secas. Necesita especialidad.
+    "Arquitecto", "Medico", "Tecnologo Medico" SI se aceptan solos (son titulos
+    completos por si mismos).
+
+(4) NUNCA pongas puestos/cargos ("Gerente de Obra", "Especialista en X",
+    "Jefe de Y", "Coordinador", "Supervisor", "Arquitecto de Obra",
+    "Ingeniero Supervisor"). Son cargos de OTRA tabla (B.2).
+
+(5) Las profesiones de una fila estan SOLO en su propia columna FORMACION
+    ACADEMICA. NUNCA mezcles con filas vecinas. Si la fila N tiene
+    "Tecnologo Medico" en su FORMACION ACADEMICA, solo la fila N puede
+    incluir "Tecnologo Medico" — las otras filas NO.
+
+(6) Reconstruye palabras pegadas del OCR (GERENTEDE → GERENTE DE,
+    IngenieroElectricista → Ingeniero Electricista).
+
+(7) Si la columna FORMACION ACADEMICA dice "X y/o Y y/o Z", extrae los 3:
+    [X, Y, Z]. Extrae TODAS las alternativas listadas con "y/o".
+
+Algunos ejemplos de como suele estructurarse (NO los copies, respeta SIEMPRE
+el texto real):
+  GERENTE DE CONTRATO → Ingeniero Civil, Arquitecto
+  INGENIERO DE CAMPO → Ingeniero Civil
+  ESPECIALISTA EN ARQUITECTURA → Arquitecto
+  ESPECIALISTA EN COSTOS, METRADOS Y VALORIZACIONES → Arquitecto, Ingeniero Civil
+  ESPECIALISTA BIM → Arquitecto, Ingeniero Civil
 
 TEXTO DEL DOCUMENTO:
 {texto}
