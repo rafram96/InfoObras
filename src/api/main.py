@@ -1255,20 +1255,65 @@ def _pdf_available(pdf_path: Optional[str]) -> bool:
 
 
 @app.get("/api/jobs", tags=["Jobs"])
-async def list_jobs():
+async def list_jobs(
+    page: int = 1,
+    per_page: int = 20,
+    job_type: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """
+    Lista jobs con paginacion. Params opcionales:
+    - page: 1-indexed (default 1)
+    - per_page: max 100 (default 20)
+    - job_type: filtra por extraction|tdr|full
+    - status: filtra por pending|running|done|error
+    - q: busqueda case-insensitive sobre filename (ILIKE %q%)
+
+    Response:
+      {"items": [...], "total": N, "page": P, "per_page": PP, "total_pages": TP}
+    """
+    # Saneo de params
+    page = max(1, page)
+    per_page = max(1, min(100, per_page))
+
+    # WHERE dinamico
+    where_clauses = []
+    params: list = []
+    if job_type in ("extraction", "tdr", "full"):
+        where_clauses.append("job_type = %s")
+        params.append(job_type)
+    if status in ("pending", "running", "done", "error"):
+        where_clauses.append("status = %s")
+        params.append(status)
+    if q and q.strip():
+        where_clauses.append("filename ILIKE %s")
+        params.append(f"%{q.strip()}%")
+    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    offset = (page - 1) * per_page
+
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Total count (para total_pages)
+            cur.execute(f"SELECT COUNT(*) AS n FROM jobs{where_sql}", params)
+            total = int(cur.fetchone()["n"])
+
+            # Pagina actual
             cur.execute(
-                "SELECT id, filename, job_type, pages_from, pages_to, status, "
-                "created_at, progress_pct, pdf_path, source_job_id, "
-                "CASE "
-                "  WHEN job_type = 'tdr' THEN (result->>'total_cargos')::int "
-                "  ELSE jsonb_array_length(COALESCE(result->'secciones', '[]'::jsonb)) "
-                "END AS profesionales_count "
-                "FROM jobs ORDER BY created_at DESC LIMIT 50"
+                f"SELECT id, filename, job_type, pages_from, pages_to, status, "
+                f"created_at, progress_pct, pdf_path, source_job_id, "
+                f"CASE "
+                f"  WHEN job_type = 'tdr' THEN (result->>'total_cargos')::int "
+                f"  ELSE jsonb_array_length(COALESCE(result->'secciones', '[]'::jsonb)) "
+                f"END AS profesionales_count "
+                f"FROM jobs{where_sql} ORDER BY created_at DESC "
+                f"LIMIT %s OFFSET %s",
+                params + [per_page, offset],
             )
             rows = cur.fetchall()
-    return [
+
+    items = [
         {
             "id": r["id"],
             "filename": r["filename"],
@@ -1284,6 +1329,15 @@ async def list_jobs():
         }
         for r in rows
     ]
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+    }
 
 
 @app.get("/api/jobs/{job_id}", tags=["Jobs"])
