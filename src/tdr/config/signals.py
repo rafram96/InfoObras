@@ -307,6 +307,7 @@ TEXTO:
 {{
   "personal_clave": [
     {{
+      "numero_fila": <N° EXACTO de la columna N° de la tabla B.1, ej: 1, 2, 3, ..., 17>,
       "cargo": "nombre exacto del cargo según el documento",
       "profesiones_aceptadas": ["lista de profesiones/títulos válidos"],
       "anos_colegiado": "N meses (texto tal como aparece, ej: '48 meses')",

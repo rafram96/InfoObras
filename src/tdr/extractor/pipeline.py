@@ -334,17 +334,19 @@ def _inferir_numero_cargo(cargo: str, texto: str) -> Optional[int]:
 
 def _ordenar_rtm_personal_por_pdf(items: list[dict], full_text: str) -> list[dict]:
     """
-    Ordena items de rtm_personal segun el N° que aparece en el PDF.
-    Los items cuyo numero no se puede inferir van al final manteniendo orden relativo.
-    Efecto: el orden final coincide con el del documento, independiente de si
-    vinieron de la primera pasada o del retry.
+    Ordena items de rtm_personal segun el N° del PDF.
+    Prioridad: campo `numero_fila` del LLM > inferencia heuristica > orden relativo.
     """
     if not items:
         return items
     indexed: list[tuple[int, int, dict]] = []  # (numero, orden_original, item)
     for idx, item in enumerate(items):
-        num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
-        # Los que no tienen num detectado van al final (99)
+        # 1. Campo explicito del LLM (preferido)
+        num = item.get("numero_fila")
+        if not (isinstance(num, int) and 1 <= num <= 30):
+            # 2. Fallback heuristico
+            num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
+        # 3. Los sin num van al final (99) manteniendo orden
         indexed.append((num if num is not None else 99, idx, item))
     indexed.sort(key=lambda t: (t[0], t[1]))
     return [t[2] for t in indexed]
@@ -353,10 +355,10 @@ def _ordenar_rtm_personal_por_pdf(items: list[dict], full_text: str) -> list[dic
 def _numeros_faltantes(texto: str, items_extraidos: list[dict]) -> list[int]:
     """
     Compara numeros detectados en el texto con los que el LLM efectivamente
-    extrajo. Retorna los numeros que parecen faltar.
+    extrajo segun su campo `numero_fila`.
 
-    Heuristica: mapea cada item extraido a un numero buscando sus keywords de
-    cargo en el texto cerca de un numero de fila.
+    Si un item no tiene numero_fila (LLM viejo o sin respeto al schema),
+    cae al inferidor heuristico.
     """
     nums_texto = _detectar_numeros_cargo(texto)
     if not nums_texto:
@@ -364,27 +366,17 @@ def _numeros_faltantes(texto: str, items_extraidos: list[dict]) -> list[int]:
 
     nums_cubiertos: set[int] = set()
     for item in items_extraidos:
-        cargo = (item.get("cargo") or "").strip()
-        if not cargo:
+        # Preferir el campo explicito del LLM
+        n_explicito = item.get("numero_fila")
+        if isinstance(n_explicito, int) and 1 <= n_explicito <= 30:
+            nums_cubiertos.add(n_explicito)
             continue
-        # Extraer la palabra distintiva del cargo (ej: "ARQUITECTURA", "BIM",
-        # "ELECTROMECANICAS", "CAMPO"). Es la ultima palabra significativa.
-        palabras = re.findall(r"\b[A-ZÁÉÍÓÚÑ]{4,}\b", cargo.upper())
-        if not palabras:
-            continue
-        # Buscar en el texto un digito cerca de esa palabra distintiva
-        for palabra in palabras[-2:]:  # ultimas 2 palabras distintivas
-            # Patron: digit (antes o despues) cerca de la palabra
-            for m in re.finditer(
-                rf"(\d{{1,2}})[\s\n\|]{{0,30}}{re.escape(palabra)}|{re.escape(palabra)}[\s\n\|]{{0,30}}(\d{{1,2}})",
-                texto, re.IGNORECASE,
-            ):
-                try:
-                    n = int(m.group(1) or m.group(2))
-                    if 1 <= n <= 30 and n in nums_texto:
-                        nums_cubiertos.add(n)
-                except (ValueError, TypeError):
-                    continue
+        # Fallback heuristico solo si no hay numero_fila
+        n_inferido = _inferir_numero_cargo(
+            item.get("cargo") or "", texto,
+        )
+        if n_inferido is not None:
+            nums_cubiertos.add(n_inferido)
 
     faltantes = sorted(nums_texto - nums_cubiertos)
     return faltantes

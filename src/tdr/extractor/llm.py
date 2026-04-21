@@ -245,6 +245,7 @@ SCHEMA OBLIGATORIO (NO INVENTES CAMPOS — usa EXACTAMENTE estos nombres):
 {{
   "personal_clave": [
     {{
+      "numero_fila": <N° EXACTO, ej: 1, 2, 17>,
       "cargo": "NOMBRE EXACTO DEL CARGO COMO APARECE",
       "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto", ...],
       "anos_colegiado": null,
