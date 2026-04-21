@@ -1455,23 +1455,44 @@ def extraer_bases(
                 full_text, resultado["rtm_personal"],
             )
             if profs_por_fila:
-                reemplazos = 0
+                actualizados = 0
                 for item in resultado["rtm_personal"]:
                     num = item.get("numero_fila")
                     if num is None:
                         num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
-                    if num in profs_por_fila and profs_por_fila[num]:
-                        nuevas_profs = profs_por_fila[num]
-                        # Aplicar filtro tambien a las nuevas profesiones
-                        nuevas_profs_limpias = [
-                            p for p in nuevas_profs if _es_profesion_real(p)
-                        ]
-                        if nuevas_profs_limpias:
-                            item["profesiones_aceptadas"] = nuevas_profs_limpias
-                            reemplazos += 1
+                    if num not in profs_por_fila:
+                        continue
+
+                    nuevas_profs = profs_por_fila[num]
+                    # Filtrar profesiones invalidas en AMBAS fuentes
+                    nuevas_limpias = [p for p in nuevas_profs if _es_profesion_real(p)]
+                    existentes = item.get("profesiones_aceptadas") or []
+                    if not isinstance(existentes, list):
+                        existentes = []
+                    existentes_limpias = [
+                        p for p in existentes
+                        if isinstance(p, str) and _es_profesion_real(p)
+                    ]
+
+                    # MERGE: union de ambas fuentes para maximizar recall.
+                    # Evita regresiones cuando la pasada B.1 devuelve menos
+                    # profesiones (ej: pierde 'Arquitecto' en GERENTE DE CONTRATO).
+                    # Normaliza por lowercase para dedup case-insensitive.
+                    combinado: list[str] = []
+                    seen: set[str] = set()
+                    for p in list(nuevas_limpias) + list(existentes_limpias):
+                        key = p.lower().strip()
+                        if key and key not in seen:
+                            seen.add(key)
+                            combinado.append(p)
+
+                    if combinado:
+                        item["profesiones_aceptadas"] = combinado
+                        actualizados += 1
+
                 logger.info(
-                    "[pipeline] Profesiones B.1 reextraidas: %d/%d items actualizados",
-                    reemplazos, len(resultado["rtm_personal"]),
+                    "[pipeline] Profesiones B.1 mergeadas: %d/%d items actualizados",
+                    actualizados, len(resultado["rtm_personal"]),
                 )
         except Exception as e:
             logger.warning("[pipeline] Reextraccion de profesiones B.1 fallo: %s", e)
