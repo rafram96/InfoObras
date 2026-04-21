@@ -411,12 +411,16 @@ def _es_profesion_real(texto: str) -> bool:
     # contrato/supervisi0n/equipo".
     _CARGO_SUFIJOS = (
         "de obra", "de campo", "de proyecto", "de contrato",
-        "de supervisi", "de equipo", "supervisor", "hospitalario de obra",
+        "de supervisi", "de equipo", "hospitalario de obra",
     )
     if any(suf in t for suf in _CARGO_SUFIJOS):
         return False
-    # "Ingeniero" a secas (sin especialidad) no es una profesion valida
-    if t in ("ingeniero", "arquitecto", "supervisor", "tecnologo", "tecnólogo"):
+    # "Ingeniero" a secas (sin especialidad) no es una profesion valida:
+    # necesita especialidad (Civil, Sanitario, Electromecanico, etc.). En
+    # cambio, "Arquitecto", "Tecnologo", "Medico" a secas SI son titulos
+    # completos validos segun la tabla B.1 (ej: ESPECIALISTA EN ARQUITECTURA
+    # tiene profesion "Arquitecto" literal).
+    if t in ("ingeniero", "supervisor"):
         return False
     # Si empieza con un prefijo de PROFESION, si es profesion
     return any(t.startswith(p) for p in _PREFIJOS_PROFESION)
@@ -1403,10 +1407,45 @@ def extraer_bases(
                                 _limpiar_profesiones_y_cargos(it)
                                 for it in items_nuevos
                             ]
-                            items = items + items_nuevos
+                            # Deduplicar: saltar items del retry cuyo numero_fila
+                            # o cargo YA existan en items principales. Evita que
+                            # el retry sobreescriba items buenos con versiones
+                            # pobres.
+                            nums_principales = {
+                                it.get("numero_fila") for it in items
+                                if it.get("numero_fila") is not None
+                            }
+                            cargos_principales = {
+                                str(it.get("cargo", "")).strip().lower()
+                                for it in items
+                                if it.get("cargo")
+                            }
+                            items_nuevos_unicos = []
+                            for it in items_nuevos:
+                                n_fila = it.get("numero_fila")
+                                cargo_norm = str(it.get("cargo", "")).strip().lower()
+                                if n_fila is not None and n_fila in nums_principales:
+                                    logger.info(
+                                        "[pipeline] Retry duplicado: #%s ya en "
+                                        "principal, descartando version retry",
+                                        n_fila,
+                                    )
+                                    continue
+                                if cargo_norm and cargo_norm in cargos_principales:
+                                    logger.info(
+                                        "[pipeline] Retry duplicado: '%s' ya en "
+                                        "principal, descartando version retry",
+                                        cargo_norm,
+                                    )
+                                    continue
+                                items_nuevos_unicos.append(it)
+                            items = items + items_nuevos_unicos
                             logger.info(
-                                "[pipeline] Retry recupero %d cargo(s) → total %d",
-                                len(items_nuevos), len(items),
+                                "[pipeline] Retry recupero %d cargo(s) unicos "
+                                "(descarto %d duplicados) → total %d",
+                                len(items_nuevos_unicos),
+                                len(items_nuevos) - len(items_nuevos_unicos),
+                                len(items),
                             )
                     except Exception as e:
                         logger.warning("[pipeline] Retry fallo: %s", e)
