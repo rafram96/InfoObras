@@ -1,0 +1,366 @@
+{
+  "nombre_tdr": "rtm.18-04-2026-123526",
+  "rtm_personal": [
+    {
+      "numero_fila": 1,
+      "cargo": "GERENTE DE CONTRATO",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Gerente de Obra",
+          "Gerente de Proyecto",
+          "Coordinador de Obra",
+          "Gerente de Supervisión",
+          "Gerente de Construcción",
+          "Director de Proyectos",
+          "Director de Obra",
+          "Gerente de Contrato de Supervisión"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 2,
+      "cargo": "JEFE DE SUPERVISION",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Jefe de Supervisión de Obra",
+          "Jefe de Equipo de Supervisión",
+          "Ingeniero Supervisor de Obra",
+          "Inspector de Obra",
+          "Supervisor de Obra",
+          "Coordinador de Supervisión de Obra",
+          "Residente",
+          "Residente de Obra",
+          "Jefe de Supervisión",
+          "Supervisor",
+          "Ingeniero Supervisor"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 3,
+      "cargo": "INGENIERO DE CAMPO",
+      "profesiones_aceptadas": ["Ingeniero Civil"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero de Campo",
+          "Asistente de Supervisor de Obra",
+          "Asistente de Jefe de Supervisión de Obra",
+          "Supervisor",
+          "Gerente de Supervisión de Obra",
+          "Asistente del Supervisor"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 4,
+      "cargo": "ESPECIALISTA EN ARQUITECTURA",
+      "profesiones_aceptadas": ["Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Arquitectura",
+          "Arquitectura Hospitalaria",
+          "Diseño Arquitectónico",
+          "Arquitecto Especialista",
+          "Arquitecto de Obra",
+          "Arquitecto de Campo",
+          "Arquitecto",
+          "Profesional en Arquitectura"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 5,
+      "cargo": "ESPECIALISTA EN ESTRUCTURAS",
+      "profesiones_aceptadas": ["Ingeniero Civil"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Especialista en Estructuras",
+          "Especialista en Edificaciones",
+          "Jefe de Estructuras",
+          "Ingeniero Estructural"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 6,
+      "cargo": "ESPECIALISTA EN INSTALACIONES SANITARIAS",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Ingeniero Sanitario"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Especialista en Instalaciones Sanitarias",
+          "Jefe en Instalaciones Sanitarias",
+          "Ingeniero Sanitario",
+          "Especialista Sanitario",
+          "Ingeniero en Instalaciones Sanitarias"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 7,
+      "cargo": "ESPECIALISTA EN INSTALACIONES ELECTRICAS",
+      "profesiones_aceptadas": [
+        "Ingeniero Eléctrico",
+        "Ingeniero Electricista",
+        "Ingeniero Electromecánico",
+        "Ingeniero Mecánico Eléctrico"
+      ],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero Eléctrico",
+          "Ingeniero Electricista",
+          "Especialista en Instalaciones Eléctricas",
+          "Especialista en Instalaciones Eléctricas y Mecánicas",
+          "Especialista en Instalaciones Electromecánicas",
+          "Supervisor de Instalaciones Eléctricas"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 8,
+      "cargo": "ESPECIALISTA EN INSTALACIONES MECANICAS",
+      "profesiones_aceptadas": [
+        "Ingeniero Mecánico",
+        "Ingeniero Electromecánico",
+        "Ingeniero Eléctrico",
+        "Ingeniero Mecánico Eléctrico"
+      ],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero Mecánico",
+          "Ingeniero Electricista",
+          "Especialista en Instalaciones Mecánicas",
+          "Especialista en Instalaciones Electromecánicas",
+          "Especialista en Instalaciones Eléctricas y Mecánicas",
+          "Supervisor de Instalaciones Mecánicas"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 9,
+      "cargo": "ESPECIALISTA EN COMUNICACIONES",
+      "profesiones_aceptadas": [
+        "Ingeniero Eléctrico",
+        "Ingeniero de Sistemas",
+        "Ingeniero Informático",
+        "Ingeniero Electrónico",
+        "Ingeniero de Telecomunicaciones",
+        "Ingeniero de Sistemas y Cómputo",
+        "Ingeniero Electrónico y Telecomunicaciones"
+      ],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero en Comunicaciones",
+          "Ingeniero en Telecomunicaciones",
+          "Ingeniero en Sistemas de Comunicaciones",
+          "Ingeniero en Cableado Estructurado",
+          "Ingeniero en Tecnología de la Información",
+          "Especialista en Comunicaciones",
+          "Especialista en Sistemas de Información",
+          "Especialista en Cableado Estructurado"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 10,
+      "cargo": "ESPECIALISTA EN EQUIPAMIENTO HOSPITALARIO",
+      "profesiones_aceptadas": [
+        "Tecnólogo Médico",
+        "Médico",
+        "Ingeniero Mecatrónico",
+        "Ingeniero Mecánico Eléctrico",
+        "Ingeniero Mecánico",
+        "Ingeniero Electrónico"
+      ],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero en Equipamiento Hospitalario",
+          "Ingeniero en Equipamiento Médico",
+          "Especialista en Equipamiento Hospitalario",
+          "Especialista en Equipamiento Médico",
+          "Jefe de Equipamiento Hospitalario",
+          "Supervisor de Equipamiento Hospitalario"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 11,
+      "cargo": "ESPECIALISTA EN CONTROL Y ASEGURAMIENTO DE LA CALIDAD",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Especialista en Control y Aseguramiento de la Calidad",
+          "Especialista en Control de Calidad",
+          "Especialista en Gestión y Control de Calidad",
+          "Especialista en QA/QC",
+          "Jefe de Control de Calidad",
+          "Ingeniero de Control de Calidad"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 12,
+      "cargo": "ESPECIALISTA EN SEGURIDAD Y SALUD EN EL TRABAJO",
+      "profesiones_aceptadas": [
+        "Ingeniero de Seguridad Laboral y Ambiental",
+        "Ingeniero de Seguridad Industrial",
+        "Ingeniero de Seguridad Industrial y Minera",
+        "Ingeniero de Higiene y Seguridad Industrial",
+        "Ingeniero Ambiental"
+      ],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero de Seguridad y Salud en el Trabajo",
+          "Ingeniero de Seguridad e Higiene Ocupacional",
+          "Especialista en Seguridad y Salud en el Trabajo",
+          "Especialista en SSOMA",
+          "Supervisor de Seguridad y Salud",
+          "Prevencionista",
+          "Inspector de Seguridad y Salud"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 13,
+      "cargo": "ESPECIALISTA EN MEDIO AMBIENTE",
+      "profesiones_aceptadas": [
+        "Ingeniero Ambiental",
+        "Ingeniero Ambiental y Recursos Naturales",
+        "Ingeniero Agrícola"
+      ],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero Ambiental",
+          "Ingeniero en Medio Ambiente",
+          "Ingeniero en Gestión Ambiental",
+          "Especialista Ambiental",
+          "Especialista en Medio Ambiente",
+          "Especialista en Impacto Ambiental",
+          "Supervisor Ambiental",
+          "Ambientalista"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 14,
+      "cargo": "ESPECIALISTA EN COSTOS, METRADOS Y VALORIZACIONES",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero de Costos, Metrados y Valorizaciones",
+          "Especialista en Costos, Metrados y Valorizaciones",
+          "Especialista en Metrados, Costos y Valorizaciones",
+          "Especialista en Valorizaciones, Costos y Presupuesto",
+          "Jefe de Costos, Metrados y Valorizaciones"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 15,
+      "cargo": "ESPECIALISTA EN GEOTECNIA",
+      "profesiones_aceptadas": [
+        "Ingeniero Civil",
+        "Ingeniero Geotécnico",
+        "Ingeniero Geólogo"
+      ],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero Geotécnico",
+          "Ingeniero en Geotecnia",
+          "Especialista en Geotecnia",
+          "Especialista en Mecánica de Suelos",
+          "Especialista en Suelos y Pavimentos",
+          "Jefe de Geotecnia"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 16,
+      "cargo": "ESPECIALISTA BIM",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Especialista BIM",
+          "Especialista en BIM",
+          "Especialista en Modelamiento BIM",
+          "Especialista en Gestión de Proyectos con BIM",
+          "BIM Manager",
+          "Coordinador BIM",
+          "Ingeniero BIM"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 17,
+      "cargo": "ESPECIALISTA EN INSTALACIONES ELECTROMECANICAS",
+      "profesiones_aceptadas": [
+        "Ingeniero Electromecánico",
+        "Ingeniero Electricista",
+        "Ingeniero Mecánico Electricista",
+        "Ingeniero Mecánico"
+      ],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Ingeniero Electromecánico",
+          "Ingeniero en Instalaciones Electromecánicas",
+          "Ingeniero en Instalaciones Eléctricas y Mecánicas",
+          "Especialista en Instalaciones Electromecánicas",
+          "Especialista en Instalaciones Eléctricas y Mecánicas",
+          "Supervisor de Instalaciones Electromecánicas"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    }
+  ]
+}

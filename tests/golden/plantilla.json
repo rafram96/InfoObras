@@ -1,0 +1,32 @@
+{
+  "_comentario": "Copia este archivo a {nombre_tdr}.json y completa cada cargo. Ver README.md en este directorio.",
+  "nombre_tdr": "ejemplo",
+  "rtm_personal": [
+    {
+      "numero_fila": 1,
+      "cargo": "GERENTE DE CONTRATO",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 24,
+        "unidad": "meses",
+        "cargos_similares_validos": [
+          "Gerente de Obra",
+          "Gerente de Proyecto",
+          "Coordinador de Obra"
+        ]
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    },
+    {
+      "numero_fila": 2,
+      "cargo": "JEFE DE SUPERVISION",
+      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "experiencia_minima": {
+        "cantidad": 36,
+        "unidad": "meses",
+        "cargos_similares_validos": []
+      },
+      "tipo_obra_valido": "establecimientos de salud"
+    }
+  ]
+}

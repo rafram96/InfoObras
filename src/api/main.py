@@ -91,12 +91,16 @@ try:
         QWEN_NUM_CTX as _STARTUP_NUM_CTX,
         QWEN_VL_MODEL as _STARTUP_QWEN_VL_MODEL,
     )
+    _vl_flag = os.getenv("USE_VL_TDR_EXTRACTION", "false").lower() == "true"
+    _force_ocr = os.getenv("FORCE_MOTOR_OCR", "false").lower() == "true"
     print("=" * 70)
-    print(f"  QWEN_MODEL        = {_STARTUP_QWEN_MODEL}")
-    print(f"  QWEN_NUM_CTX      = {_STARTUP_NUM_CTX}")
-    print(f"  QWEN_VL_MODEL     = {_STARTUP_QWEN_VL_MODEL}")
-    print(f"  .env QWEN_MODEL   = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
-    print(f"  .env QWEN_NUM_CTX = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
+    print(f"  QWEN_MODEL              = {_STARTUP_QWEN_MODEL}")
+    print(f"  QWEN_NUM_CTX            = {_STARTUP_NUM_CTX}")
+    print(f"  QWEN_VL_MODEL           = {_STARTUP_QWEN_VL_MODEL}")
+    print(f"  .env QWEN_MODEL         = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
+    print(f"  .env QWEN_NUM_CTX       = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
+    print(f"  USE_VL_TDR_EXTRACTION   = {'TRUE (VL activo)' if _vl_flag else 'false (pipeline textual)'}")
+    print(f"  FORCE_MOTOR_OCR         = {'TRUE (sin fast-path)' if _force_ocr else 'false (fast-path habilitado)'}")
     print("=" * 70)
 except Exception as _e:
     print(f"[startup] No se pudo imprimir config Ollama: {_e}")

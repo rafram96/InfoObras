@@ -1,0 +1,276 @@
+# Próximas mejoras al pipeline de extracción TDR
+
+Roadmap post-merge de `feat/tdr-vl-extraction`. Captura lo que aprendimos
+durante el experimento VL y qué falta atacar para subir precisión.
+
+## Estado actual (lo que mergeó)
+
+- Golden set anotado para TDR Huancavelica (`tests/golden/rtm_huancavelica.json`)
+- Script de evaluación `tests/evaluar_tdr.py` con métricas por campo
+- Fix del validador `_es_profesion_derivada_del_cargo` que descarta
+  alucinaciones tipo "Ingeniero de Costos" para cargo "ESPECIALISTA EN COSTOS"
+- Banner mejorado al startup (incluye USE_VL_TDR_EXTRACTION y FORCE_MOTOR_OCR)
+- Infraestructura VL (`vl_extractor.py`, `vl_extract_tdr_worker.py`,
+  `vl_extract_tdr_client.py`) — desactivada por default (`USE_VL_TDR_EXTRACTION=false`)
+
+## Métricas baseline actuales
+
+Sobre TDR Huancavelica (17 cargos), con 3 runs:
+
+| Métrica                    | Valor estable    |
+|----------------------------|------------------|
+| Cargos detectados          | 17/17 ✅         |
+| Tiempo meses               | 100% ✅          |
+| Tipo obra                  | 100% ✅          |
+| Profesiones F1             | 0.55 ± 0.05      |
+| Profesiones Precision      | ~70%             |
+| Profesiones Recall         | 41-55%           |
+| Cargos similares F1        | 0.30 ± 0.03      |
+
+La variabilidad ±0.05 entre runs viene del LLM (qwen2.5:14b) no determinista
+incluso a `temperature=0`. Para métricas confiables hay que promediar 3-5 runs.
+
+## Problema raíz: cross-row contamination
+
+El LLM textual procesa todo el bloque B.1 (3-5 páginas, 17 filas) en una sola
+llamada. Resultado: mezcla profesiones entre filas adyacentes.
+
+**Ejemplos observados** en runs distintos del mismo PDF:
+- Fila #9 (COMUNICACIONES) recibió `["medico", "tecnologo medico", "ingeniero
+  mecatronico"]` que pertenecen a #10 EQUIPAMIENTO HOSPITALARIO
+- Fila #14 (COSTOS) inventó `"Ingeniero de Costos"` derivándolo del nombre del
+  cargo (esto sí ya está fix con el validador, pero ilustra el patrón)
+- Filas #15, #16, #17 frecuentemente pierden las profesiones genéricas
+  ("Ingeniero Civil", "Arquitecto") que sí aparecen en B.1
+
+Esto **no se arregla con prompt engineering** sin cambiar la estrategia.
+
+## Opción A — Extracción fila-por-fila ⭐ RECOMENDADA
+
+### Idea
+
+En vez de mandar todo B.1 al LLM en un solo prompt, **una llamada por fila**:
+
+1. Detectar las 17 filas de B.1 con regex sobre el texto OCR (números N°,
+   límites por header repetido, etc.)
+2. Para cada fila, extraer su contenido específico (las ~3-5 líneas que la
+   componen visualmente)
+3. Mandar al LLM **solo esa fila** con prompt acotado: "extrae profesiones
+   y cargo de esta fila. NO inventes."
+4. Recolectar 17 respuestas → estructura final
+
+### Por qué resuelve cross-row
+
+- El LLM solo ve una fila a la vez. No tiene de dónde "robar" datos de filas
+  adyacentes.
+- El prompt es 95% más corto → la atención del modelo se concentra en una
+  cosa.
+- Cada fila tiene contexto independiente → si una falla, las otras 16 no
+  arrastran el error.
+
+### Trade-offs
+
+| Pro                                | Contra                                   |
+|------------------------------------|------------------------------------------|
+| Elimina cross-row de raíz          | 17 llamadas LLM en vez de 1 → +50% latencia |
+| Cada fila es debuggeable aislada   | Necesita parser robusto por fila         |
+| Errores localizados, no propagan   | Más complejo de mantener                 |
+| Reproducibilidad mucho mejor       | Reutiliza menos contexto compartido      |
+
+### Estimación
+
+| Tarea                                              | Esfuerzo |
+|----------------------------------------------------|----------|
+| Detector de límites de fila (regex sobre OCR)      | 2-3 h    |
+| Refactor del prompt B.1 a versión "una fila"       | 1-2 h    |
+| Loop por fila + agregación + parser                | 2-3 h    |
+| Misma idea aplicada a B.2 (más complejo)           | 4-6 h    |
+| Tests con golden + iteración                       | 3-4 h    |
+| **Total**                                          | **1.5-2 días** |
+
+### Mejora esperada
+
+- Profesiones Recall: 41-55% → 75-80%
+- Profesiones F1: 0.55 → 0.75+
+- Cargos similares F1: 0.30 → 0.55+
+- Latencia por TDR: 3-4 min → 5-7 min (aceptable para batch)
+- Variabilidad entre runs: ±0.05 → ±0.02 (más estable)
+
+### Plan de implementación
+
+1. **Detector de filas B.1** — `src/tdr/extractor/row_splitter.py`
+   - Input: texto OCR de las páginas de B.1
+   - Output: lista de 17 strings, una por fila
+   - Heurística: split por números al inicio de línea (1\n, 2\n, ...)
+     con validación de continuidad
+
+2. **Nuevo prompt acotado** — `src/tdr/config/signals.py`
+   - `PROMPT_RTM_PERSONAL_FILA` (vs el actual que ve todo)
+   - Recibe: número de fila, texto de la fila
+   - Devuelve: `{numero, cargo, profesiones[]}`
+   - Reglas anti-alucinación más fuertes (sin contexto de otras filas)
+
+3. **Orquestador** — `src/tdr/extractor/pipeline.py`
+   - Si `USE_ROW_BY_ROW_EXTRACTION=true` (nuevo flag)
+   - Reemplaza el bloque actual de extracción rtm_personal
+   - Loop con `concurrent.futures` para paralelizar 4-6 filas a la vez
+   - Mantener pipeline actual como fallback si falla
+
+4. **Aplicar la misma estrategia a B.2**
+   - Es más complejo porque las filas B.2 son párrafos largos
+   - Posiblemente combinar 2-3 filas por llamada para no saturar requests
+
+5. **Re-correr eval con golden y comparar**
+   - Si F1 sube como esperamos → flag a default `true`
+   - Mergear a main
+
+## Opciones alternativas (descartadas o de menor prioridad)
+
+### Opción B — Prompt rework con reglas estrictas
+
+Reescribir `PROMPT_RTM_PERSONAL` con reglas más explícitas de "una fila a la
+vez". Probado parcialmente — mejora marginal incierta (+0-10% recall),
+4-6 horas de trabajo. **No resuelve el problema de raíz**, solo lo mitiga.
+
+Posible reintento si Opción A no es viable por tiempo.
+
+### Opción C — Aceptar lo que hay + revisión manual
+
+Cliente recibe el Excel con las 4-5 filas conflictivas (típicamente #9,
+#10, #14, #15, #16, #17) marcadas en amarillo para revisión humana.
+
+**Realidad**: el cliente quiere 100% automático. Esta opción es solo si A no
+fuera viable y el cliente flexibilizara el requisito. **No preferida**.
+
+### Extracción visual estructurada con VL (rama feat/tdr-vl-extraction)
+
+Probada y descartada por ahora:
+- B.2 con qwen2.5vl:7b devolvió 0 filas (saturación de imágenes / tokens)
+- B.1 dio 12/17 filas parciales
+- Mejora real medida: +0.031 F1 en profesiones a costa de +3-4 min
+- **No paga el tradeoff**
+
+Reactivable si:
+- Aparece un VL más potente (qwen3-vl, claude-vision, etc.)
+- Splitting por imagen-página resuelve la saturación
+- Cliente acepta latencia mayor
+
+## Diccionario de dominio (construcción hospitalaria)
+
+### Idea
+
+Como TODOS los TDRs del cliente son construcción hospitalaria (inmobiliaria
+Alpamayo / hospitales del MINSA), hay un set finito de profesiones y cargos
+que se repiten. Construir un diccionario hardcoded `PROFESIONES_TIPICAS_POR_CARGO`
+y `CARGOS_TIPICOS_POR_ROL` que pueda usarse en 3 modos:
+
+```python
+# src/tdr/config/dominio_construccion_hospitalaria.py
+PROFESIONES_TIPICAS_POR_CARGO = {
+    "GERENTE DE CONTRATO": ["Ingeniero Civil", "Arquitecto"],
+    "JEFE DE SUPERVISION": ["Ingeniero Civil", "Arquitecto"],
+    "ESPECIALISTA EN ESTRUCTURAS": ["Ingeniero Civil", "Ingeniero Estructural"],
+    "ESPECIALISTA EN INSTALACIONES SANITARIAS": ["Ingeniero Sanitario", "Ingeniero Civil"],
+    "ESPECIALISTA EN EQUIPAMIENTO HOSPITALARIO": [
+        "Tecnólogo Médico", "Médico", "Ingeniero Mecatrónico",
+        "Ingeniero Electrónico", "Ingeniero Mecánico Eléctrico"
+    ],
+    # ... resto
+}
+```
+
+### Cómo NO usarlo
+
+- **No** como override que mete profesiones por encima del PDF. Si un TDR
+  específico restringe (ej: solo "Arquitecto" para BIM, sin Ing Civil), y el
+  diccionario añade "Ing Civil", terminamos validando candidatos que NO
+  deberían pasar — peor que faltar uno.
+- **No** como solución única antes de tener 3-5 TDRs anotados. Con solo
+  Huancavelica, sobreajustamos al caso particular.
+
+### Cómo SÍ usarlo (3 modos combinables)
+
+**1. Few-shot examples en el prompt LLM** (modo principal)
+   - Inyectar el diccionario como contexto en `PROMPT_RTM_PERSONAL` /
+     `PROMPT_RTM_PERSONAL_FILA`.
+   - Ejemplo: "Los TDRs OSCE de construcción hospitalaria suelen aceptar:
+     ESPECIALISTA EN ESTRUCTURAS → Ingeniero Civil, Ingeniero Estructural.
+     ESPECIALISTA EN INSTALACIONES SANITARIAS → Ingeniero Sanitario, Ingeniero
+     Civil. PERO extrae solo lo que diga la tabla B.1 de ESTE PDF."
+   - Sesga al LLM hacia lo razonable sin quitarle fidelidad al PDF.
+
+**2. Validador post-extracción que flaggea** (no añade)
+   - Si pipeline extrae profesiones para `ESPECIALISTA EN ESTRUCTURAS` y NO
+     incluye ninguna del set típico (`Ingeniero Civil`, `Ingeniero Estructural`),
+     marcar `_needs_review=true` con razón "no matchea profesiones esperadas
+     del dominio".
+   - El cliente decide en UI: aceptar o corregir manualmente.
+   - Cero riesgo de overfit — solo es señal, no acción.
+
+**3. Fallback solo si extracción está vacía**
+   - Si pipeline devolvió `profesiones_aceptadas: []` para un cargo conocido,
+     usar el diccionario como respaldo + marcar `_vino_de_diccionario=true`
+     para auditoría.
+   - Cubre el peor caso (extracción totalmente fallida) sin contaminar casos
+     normales.
+
+### Prerequisitos antes de implementar
+
+- **Anotar 2-3 TDRs adicionales** (no solo Huancavelica). Lo que se repite en
+  TODOS va al diccionario. Lo que varía, NO. Sin esa muestra, el diccionario
+  refleja Huancavelica, no el dominio.
+- **Validar con el cliente** que las profesiones del diccionario sí son
+  universalmente aceptadas en sus TDRs hospitalarios.
+
+### Estimación
+
+| Tarea                                                | Esfuerzo |
+|------------------------------------------------------|----------|
+| Anotar 2-3 TDRs adicionales (cliente)                | -        |
+| Construir diccionario inicial vía análisis de TDRs   | 2-3 h    |
+| Integrar como few-shot en prompt + validar           | 2-3 h    |
+| Validador post-extracción + flag UI                  | 3-4 h    |
+| Fallback de listas vacías                            | 1 h      |
+| **Total** (después de tener TDRs anotados)           | **1 día** |
+
+### Mejora esperada (combinado con Opción A)
+
+- Reduce falsos negativos en filas problemáticas (#14, #15, #16) que tienen
+  profesiones genéricas no enumeradas explícitamente en el PDF
+- Estabiliza recall entre runs (variabilidad LLM compensada por diccionario)
+- Da al cliente una "red de seguridad" auditable — sabe cuándo el sistema
+  rellenó vs cuándo extrajo del PDF
+
+## Otras mejoras menores (backlog)
+
+1. **Profesiones combinadas** — el LLM ocasionalmente concatena dos profesiones
+   en un solo string (ej: "Ingeniero Civil y Arquitecto"). Add post-procesador
+   que detecta " y/o " interno y splittea.
+
+2. **Normalización de cargos similares** — pipeline produce variantes ("Jefe de
+   Estructuras" vs "Jefe en Estructuras"). Normalizador antes del eval/output.
+
+3. **Anotar más golden sets** — Huancavelica solo tiene 1 anotado. Para
+   métricas robustas necesitamos 3-5 TDRs distintos. Pedir al cliente.
+   (También prerequisito del diccionario de dominio — ver sección anterior).
+
+4. **Correr eval automáticamente en CI** — cuando se pushea a main, correr
+   eval contra el golden y fallar si F1 baja >0.05 vs baseline.
+
+5. **Visualización de cross-row contamination en UI** — marcar visualmente en
+   `/jobs/[id]` qué profesiones parecen "fuera de lugar" (típicamente las que
+   no matchean profesiones esperadas según el cargo). Esto se beneficia
+   directamente del validador del diccionario de dominio (modo 2).
+
+## Decisión y próximo paso
+
+**Plan inmediato**: ir con **Opción A** (extracción fila-por-fila).
+
+**Prerequisito antes de empezar**:
+- Confirmar con el cliente que +2 minutos de latencia por TDR es aceptable
+- Tener golden set de al menos 1 TDR adicional (no Huancavelica) para evitar
+  overfitting al PDF de prueba
+
+**Cuando arrancar**: cuando el cliente valide que la calidad actual no es
+suficiente, o cuando proactivamente queramos subir la barra antes del
+deadline.
