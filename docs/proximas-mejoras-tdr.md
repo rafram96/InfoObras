@@ -241,6 +241,75 @@ PROFESIONES_TIPICAS_POR_CARGO = {
 - Da al cliente una "red de seguridad" auditable — sabe cuándo el sistema
   rellenó vs cuándo extrajo del PDF
 
+## Verificaciones externas automatizables (SUNAT, colegios)
+
+**Prioridad**: BAJA / extra. No bloquea el deadline, mejora cobertura de
+alertas ALT04 (SUNAT) y ALT09 (colegios) que hoy se hacen manuales.
+
+CLAUDE.md actualmente dice "SUNAT verificación manual — tiene CAPTCHA, no
+se automatiza". Eso es cierto para el formulario directo, pero hay caminos
+viables que no había explorado.
+
+### SUNAT — vía padrón mensual descargable ⭐
+
+SUNAT publica un padrón gratuito con TODOS los RUCs activos (~10M). Incluye
+el dato que necesita ALT04: **fecha de inicio de actividades**.
+
+URL: `https://www2.sunat.gob.pe/padron_reducido_ruc.zip`
+
+**Por qué funciona para nuestro caso:**
+- ALT04 dispara cuando "empresa constituida después del inicio de
+  experiencia". La fecha de inscripción del RUC NO cambia → datos de hasta
+  un mes de antigüedad son aceptables.
+- Por TDR analizado se verifican 5-20 RUCs (los que firman certificados).
+  Lookup local instantáneo, en batch, sin captcha, sin API externa.
+
+**Implementación**:
+
+1. Descarga inicial del padrón
+2. Schema `sunat_padron` en PostgreSQL con índice `ruc UNIQUE`
+3. Script de import (Python + psycopg2 bulk insert)
+4. Endpoint `GET /api/sunat/{ruc}` con lookup local
+5. Integrar en `src/validation/` para disparar ALT04 automáticamente
+6. Cron mensual (Windows Task Scheduler) que re-importa
+
+**Estimación**: 3-4 h.
+
+**Trade-offs vs alternativas**:
+
+| Opción                              | Costo     | Real-time | On-premise | Recomendada |
+|-------------------------------------|-----------|-----------|------------|-------------|
+| Padrón mensual                      | $0        | No (≤30d) | Sí         | ⭐           |
+| API tercera (ruc.com.pe)            | ~$1/1000  | Sí        | No         | Fallback    |
+| Scraping con CAPTCHA solver         | ~$1-3/1000 + frágil | Sí | Sí       | No          |
+
+### Colegios profesionales — investigar caso por caso
+
+CLAUDE.md dice "cada colegio tiene portal distinto, no se automatiza".
+Es cierto, pero algunos colegios sí publican padrón:
+
+- **CIP** (Colegio de Ingenieros del Perú): tiene búsqueda pública por
+  número de colegiatura. Investigar si hay endpoint sin captcha.
+- **CAP** (Colegio de Arquitectos): similar.
+- **CMP** (Colegio Médico): tiene padrón web público.
+- **CTMP** (Colegio de Tecnólogos Médicos): probablemente similar.
+
+**Estrategia recomendada cuando se aborde**:
+- Por cada colegio, evaluar si tiene endpoint público sin captcha
+- Si sí → scraping ligero (BeautifulSoup) con cache local de 7 días
+- Si no → marcar manual y mostrar link directo en UI
+
+**Estimación**: 1-2h por colegio (4-5 colegios principales = ~6-10h total).
+
+### Cuándo abordarlo
+
+- **No bloquea el deadline**. Hoy las alertas ALT04 y ALT09 se generan como
+  "verificación manual" en el Excel y el evaluador las revisa.
+- Buen candidato para **post-MVP**, cuando el cliente esté usando el sistema
+  y diga "esto sí valdría automatizarlo".
+- SUNAT primero (mayor volumen, datos estables, padrón gratuito → quick win).
+  Colegios después (más fragmentado, ROI menor).
+
 ## Otras mejoras menores (backlog)
 
 1. **Profesiones combinadas** — el LLM ocasionalmente concatena dos profesiones
