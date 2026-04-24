@@ -585,13 +585,21 @@ def _limpiar_profesiones_y_cargos(item: dict) -> dict:
     if not isinstance(cargos_sim, list):
         cargos_sim = []
 
+    cargo_item = item.get("cargo", "")
     profs_limpias = []
     cargos_movidos = []
+    profs_descartadas = []  # alucinaciones derivadas del cargo
     for p in profs:
         if not isinstance(p, str):
             continue
         if _es_profesion_real(p):
-            profs_limpias.append(p)
+            # Filtrar alucinaciones tipo "Ingeniero de Costos" para
+            # 'ESPECIALISTA EN COSTOS' — son derivadas del nombre del cargo,
+            # no titulos universitarios reales.
+            if _es_profesion_derivada_del_cargo(p, cargo_item):
+                profs_descartadas.append(p)
+            else:
+                profs_limpias.append(p)
         else:
             # No parece profesion — probable puesto contaminado desde B.2
             cargos_movidos.append(p)
@@ -601,6 +609,12 @@ def _limpiar_profesiones_y_cargos(item: dict) -> dict:
             "[validador] Cargo '%s': %d puesto(s) movido(s) de profesiones a "
             "cargos_similares_validos: %s",
             item.get("cargo", "?"), len(cargos_movidos), cargos_movidos,
+        )
+    if profs_descartadas:
+        logger.info(
+            "[validador] Cargo '%s': %d profesion(es) derivada(s) del cargo "
+            "descartada(s) (alucinaciones): %s",
+            item.get("cargo", "?"), len(profs_descartadas), profs_descartadas,
         )
 
     item["profesiones_aceptadas"] = profs_limpias

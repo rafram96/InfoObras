@@ -70,16 +70,9 @@
         "cantidad": 36,
         "unidad": "meses",
         "cargos_similares_validos": [
-          "Especialista en Arquitectura",
-          "Especialista en Arquitectura Hospitalaria",
-          "Especialista en Diseño Arquitectónico",
-          "Coordinador en Arquitectura",
-          "Coordinador en Arquitectura Hospitalaria",
-          "Coordinador en Diseño Arquitectónico",
-          "Responsable en Arquitectura",
-          "Inspector en Arquitectura",
-          "Supervisor en Arquitectura",
-          "Jefe en Arquitectura",
+          "Arquitectura",
+          "Arquitectura Hospitalaria",
+          "Diseño Arquitectónico",
           "Arquitecto Especialista",
           "Arquitecto de Obra",
           "Arquitecto de Campo",
@@ -98,10 +91,9 @@
         "unidad": "meses",
         "cargos_similares_validos": [
           "Especialista en Estructuras",
-          "Jefe de Estructuras",
-          "Ingeniero Estructural",
           "Especialista en Edificaciones",
-          "Especialista en Estructuras y Edificaciones"
+          "Jefe de Estructuras",
+          "Ingeniero Estructural"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -138,16 +130,10 @@
         "cargos_similares_validos": [
           "Ingeniero Eléctrico",
           "Ingeniero Electricista",
-          "Ingeniero en Instalaciones Eléctricas",
-          "Ingeniero en Instalaciones Eléctricas y Mecánicas",
-          "Ingeniero en Instalaciones Electromecánicas",
           "Especialista en Instalaciones Eléctricas",
           "Especialista en Instalaciones Eléctricas y Mecánicas",
           "Especialista en Instalaciones Electromecánicas",
-          "Supervisor de Instalaciones Eléctricas",
-          "Jefe de Instalaciones Eléctricas",
-          "Responsable de Instalaciones Eléctricas",
-          "Coordinador de Instalaciones Eléctricas"
+          "Supervisor de Instalaciones Eléctricas"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -167,16 +153,10 @@
         "cargos_similares_validos": [
           "Ingeniero Mecánico",
           "Ingeniero Electricista",
-          "Ingeniero en Instalaciones Mecánicas",
-          "Ingeniero en Instalaciones Electromecánicas",
-          "Ingeniero en Instalaciones Eléctricas y Mecánicas",
           "Especialista en Instalaciones Mecánicas",
           "Especialista en Instalaciones Electromecánicas",
           "Especialista en Instalaciones Eléctricas y Mecánicas",
-          "Supervisor de Instalaciones Mecánicas",
-          "Jefe de Instalaciones Mecánicas",
-          "Responsable de Instalaciones Mecánicas",
-          "Coordinador de Instalaciones Mecánicas"
+          "Supervisor de Instalaciones Mecánicas"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -197,26 +177,14 @@
         "cantidad": 36,
         "unidad": "meses",
         "cargos_similares_validos": [
-          "Ingeniero en Instalaciones de Telecomunicaciones",
-          "Ingeniero en Redes de Datos",
-          "Ingeniero en Voz y Data",
-          "Ingeniero en Tecnología de la Información",
-          "Ingeniero en Sistemas de Información",
-          "Ingeniero en Instalaciones de Comunicaciones",
-          "Ingeniero en Redes de Cableado Estructurado",
-          "Ingeniero en Cableado Estructurado",
           "Ingeniero en Comunicaciones",
-          "Ingeniero en Comunicaciones e Informática",
-          "Ingeniero en Sistemas Electrónicos",
+          "Ingeniero en Telecomunicaciones",
           "Ingeniero en Sistemas de Comunicaciones",
-          "Ingeniero en Instalaciones de Cableado Estructurado",
+          "Ingeniero en Cableado Estructurado",
+          "Ingeniero en Tecnología de la Información",
           "Especialista en Comunicaciones",
-          "Especialista en Telecomunicaciones",
-          "Especialista en Redes de Datos",
-          "Jefe de Comunicaciones",
-          "Supervisor de Comunicaciones",
-          "Responsable de Comunicaciones",
-          "Coordinador de Comunicaciones"
+          "Especialista en Sistemas de Información",
+          "Especialista en Cableado Estructurado"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -238,16 +206,10 @@
         "cargos_similares_validos": [
           "Ingeniero en Equipamiento Hospitalario",
           "Ingeniero en Equipamiento Médico",
-          "Ingeniero en Equipamiento Mecánico",
-          "Ingeniero en Equipamiento Técnico",
           "Especialista en Equipamiento Hospitalario",
           "Especialista en Equipamiento Médico",
-          "Especialista en Equipamiento Mecánico",
-          "Especialista en Equipamiento Técnico",
           "Jefe de Equipamiento Hospitalario",
-          "Jefe de Equipamiento Médico",
-          "Supervisor de Equipamiento Hospitalario",
-          "Supervisor de Equipamiento Médico"
+          "Supervisor de Equipamiento Hospitalario"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -261,17 +223,11 @@
         "unidad": "meses",
         "cargos_similares_validos": [
           "Especialista en Control y Aseguramiento de la Calidad",
-          "Especialista en Gestión y Control de Calidad",
-          "Especialista en Control de Calidad y Protocolos",
-          "Especialista en Control de Calidad de Obra",
           "Especialista en Control de Calidad",
+          "Especialista en Gestión y Control de Calidad",
           "Especialista en QA/QC",
           "Jefe de Control de Calidad",
-          "Responsable de Control de Calidad",
-          "Ingeniero de Control de Calidad",
-          "Supervisor de Control de Calidad",
-          "Coordinador de Control de Calidad",
-          "QA/QC"
+          "Ingeniero de Control de Calidad"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -291,21 +247,12 @@
         "unidad": "meses",
         "cargos_similares_validos": [
           "Ingeniero de Seguridad y Salud en el Trabajo",
-          "Ingeniero de Seguridad y Salud",
-          "Ingeniero de Seguridad Industrial y Ambiental",
-          "Ingeniero de Seguridad e Higiene Ocupacional de Obra",
-          "Ingeniero de Seguridad, Salud e Higiene Ocupacional",
-          "Ingeniero SSOMA",
+          "Ingeniero de Seguridad e Higiene Ocupacional",
           "Especialista en Seguridad y Salud en el Trabajo",
-          "Especialista en Seguridad y Salud",
           "Especialista en SSOMA",
-          "Especialista en Seguridad en Obra y Salud Ocupacional",
-          "Supervisor de Seguridad y Salud en el Trabajo",
-          "Jefe de Seguridad y Salud",
+          "Supervisor de Seguridad y Salud",
           "Prevencionista",
-          "Inspector de Seguridad y Salud",
-          "Responsable de Seguridad y Salud",
-          "Coordinador de Seguridad y Salud"
+          "Inspector de Seguridad y Salud"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -324,22 +271,11 @@
         "cargos_similares_validos": [
           "Ingeniero Ambiental",
           "Ingeniero en Medio Ambiente",
-          "Ingeniero en Impacto Ambiental",
-          "Ingeniero en Mitigación Ambiental",
-          "Ingeniero en Monitoreo Ambiental",
           "Ingeniero en Gestión Ambiental",
-          "Ingeniero en Medio Ambiente y Recursos Naturales",
           "Especialista Ambiental",
           "Especialista en Medio Ambiente",
           "Especialista en Impacto Ambiental",
-          "Especialista en PMA",
-          "Especialista en Gestión Ambiental",
-          "Especialista en Monitoreo Ambiental",
           "Supervisor Ambiental",
-          "Jefe de Medio Ambiente",
-          "Responsable Ambiental",
-          "Coordinador Ambiental",
-          "Inspector Ambiental",
           "Ambientalista"
         ]
       },
@@ -354,15 +290,10 @@
         "unidad": "meses",
         "cargos_similares_validos": [
           "Ingeniero de Costos, Metrados y Valorizaciones",
-          "Ingeniero de Metrados, Costos y Valorizaciones",
-          "Ingeniero de Valorizaciones, Costos y Presupuesto",
           "Especialista en Costos, Metrados y Valorizaciones",
           "Especialista en Metrados, Costos y Valorizaciones",
           "Especialista en Valorizaciones, Costos y Presupuesto",
-          "Jefe de Costos, Metrados y Valorizaciones",
-          "Supervisor de Costos, Metrados y Valorizaciones",
-          "Responsable de Costos, Metrados y Valorizaciones",
-          "Coordinador de Costos, Metrados y Valorizaciones"
+          "Jefe de Costos, Metrados y Valorizaciones"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -381,15 +312,10 @@
         "cargos_similares_validos": [
           "Ingeniero Geotécnico",
           "Ingeniero en Geotecnia",
-          "Ingeniero en Mecánica de Suelos",
-          "Ingeniero en Suelos y Pavimentos",
           "Especialista en Geotecnia",
           "Especialista en Mecánica de Suelos",
           "Especialista en Suelos y Pavimentos",
-          "Supervisor de Geotecnia",
-          "Jefe de Geotecnia",
-          "Responsable de Geotecnia",
-          "Coordinador de Geotecnia"
+          "Jefe de Geotecnia"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -405,16 +331,10 @@
           "Especialista BIM",
           "Especialista en BIM",
           "Especialista en Modelamiento BIM",
-          "Especialista en Modelamiento BIM REVIT",
           "Especialista en Gestión de Proyectos con BIM",
           "BIM Manager",
-          "Jefe BIM",
-          "Responsable BIM",
-          "Ingeniero BIM",
-          "Supervisor BIM",
           "Coordinador BIM",
-          "Gerente BIM",
-          "Analista BIM"
+          "Ingeniero BIM"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -432,22 +352,12 @@
         "cantidad": 24,
         "unidad": "meses",
         "cargos_similares_validos": [
-          "Ingeniero en Instalaciones Mecánicas",
+          "Ingeniero Electromecánico",
           "Ingeniero en Instalaciones Electromecánicas",
           "Ingeniero en Instalaciones Eléctricas y Mecánicas",
-          "Ingeniero Mecánico",
-          "Ingeniero Eléctrico",
-          "Ingeniero Electricista",
-          "Ingeniero en Instalaciones Eléctricas",
-          "Ingeniero en Instalaciones Eléctricas y Electromecánicas",
-          "Especialista en Instalaciones Mecánicas",
           "Especialista en Instalaciones Electromecánicas",
           "Especialista en Instalaciones Eléctricas y Mecánicas",
-          "Especialista en Instalaciones Eléctricas",
-          "Supervisor de Instalaciones Electromecánicas",
-          "Jefe de Instalaciones Electromecánicas",
-          "Responsable de Instalaciones Electromecánicas",
-          "Coordinador de Instalaciones Electromecánicas"
+          "Supervisor de Instalaciones Electromecánicas"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
