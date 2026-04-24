@@ -9,6 +9,10 @@ ocr_output/
 *.xlsx
 *.json
 
+# Excepcion: golden set de evaluacion TDR (no son resultados, son verdad anotada)
+!tests/golden/plantilla.json
+!tests/golden/rtm_huancavelica.json
+
 # Python
 __pycache__/
 *.py[cod]
