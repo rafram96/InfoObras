@@ -155,6 +155,92 @@ Reactivable si:
 - Splitting por imagen-página resuelve la saturación
 - Cliente acepta latencia mayor
 
+## Diccionario de dominio (construcción hospitalaria)
+
+### Idea
+
+Como TODOS los TDRs del cliente son construcción hospitalaria (inmobiliaria
+Alpamayo / hospitales del MINSA), hay un set finito de profesiones y cargos
+que se repiten. Construir un diccionario hardcoded `PROFESIONES_TIPICAS_POR_CARGO`
+y `CARGOS_TIPICOS_POR_ROL` que pueda usarse en 3 modos:
+
+```python
+# src/tdr/config/dominio_construccion_hospitalaria.py
+PROFESIONES_TIPICAS_POR_CARGO = {
+    "GERENTE DE CONTRATO": ["Ingeniero Civil", "Arquitecto"],
+    "JEFE DE SUPERVISION": ["Ingeniero Civil", "Arquitecto"],
+    "ESPECIALISTA EN ESTRUCTURAS": ["Ingeniero Civil", "Ingeniero Estructural"],
+    "ESPECIALISTA EN INSTALACIONES SANITARIAS": ["Ingeniero Sanitario", "Ingeniero Civil"],
+    "ESPECIALISTA EN EQUIPAMIENTO HOSPITALARIO": [
+        "Tecnólogo Médico", "Médico", "Ingeniero Mecatrónico",
+        "Ingeniero Electrónico", "Ingeniero Mecánico Eléctrico"
+    ],
+    # ... resto
+}
+```
+
+### Cómo NO usarlo
+
+- **No** como override que mete profesiones por encima del PDF. Si un TDR
+  específico restringe (ej: solo "Arquitecto" para BIM, sin Ing Civil), y el
+  diccionario añade "Ing Civil", terminamos validando candidatos que NO
+  deberían pasar — peor que faltar uno.
+- **No** como solución única antes de tener 3-5 TDRs anotados. Con solo
+  Huancavelica, sobreajustamos al caso particular.
+
+### Cómo SÍ usarlo (3 modos combinables)
+
+**1. Few-shot examples en el prompt LLM** (modo principal)
+   - Inyectar el diccionario como contexto en `PROMPT_RTM_PERSONAL` /
+     `PROMPT_RTM_PERSONAL_FILA`.
+   - Ejemplo: "Los TDRs OSCE de construcción hospitalaria suelen aceptar:
+     ESPECIALISTA EN ESTRUCTURAS → Ingeniero Civil, Ingeniero Estructural.
+     ESPECIALISTA EN INSTALACIONES SANITARIAS → Ingeniero Sanitario, Ingeniero
+     Civil. PERO extrae solo lo que diga la tabla B.1 de ESTE PDF."
+   - Sesga al LLM hacia lo razonable sin quitarle fidelidad al PDF.
+
+**2. Validador post-extracción que flaggea** (no añade)
+   - Si pipeline extrae profesiones para `ESPECIALISTA EN ESTRUCTURAS` y NO
+     incluye ninguna del set típico (`Ingeniero Civil`, `Ingeniero Estructural`),
+     marcar `_needs_review=true` con razón "no matchea profesiones esperadas
+     del dominio".
+   - El cliente decide en UI: aceptar o corregir manualmente.
+   - Cero riesgo de overfit — solo es señal, no acción.
+
+**3. Fallback solo si extracción está vacía**
+   - Si pipeline devolvió `profesiones_aceptadas: []` para un cargo conocido,
+     usar el diccionario como respaldo + marcar `_vino_de_diccionario=true`
+     para auditoría.
+   - Cubre el peor caso (extracción totalmente fallida) sin contaminar casos
+     normales.
+
+### Prerequisitos antes de implementar
+
+- **Anotar 2-3 TDRs adicionales** (no solo Huancavelica). Lo que se repite en
+  TODOS va al diccionario. Lo que varía, NO. Sin esa muestra, el diccionario
+  refleja Huancavelica, no el dominio.
+- **Validar con el cliente** que las profesiones del diccionario sí son
+  universalmente aceptadas en sus TDRs hospitalarios.
+
+### Estimación
+
+| Tarea                                                | Esfuerzo |
+|------------------------------------------------------|----------|
+| Anotar 2-3 TDRs adicionales (cliente)                | -        |
+| Construir diccionario inicial vía análisis de TDRs   | 2-3 h    |
+| Integrar como few-shot en prompt + validar           | 2-3 h    |
+| Validador post-extracción + flag UI                  | 3-4 h    |
+| Fallback de listas vacías                            | 1 h      |
+| **Total** (después de tener TDRs anotados)           | **1 día** |
+
+### Mejora esperada (combinado con Opción A)
+
+- Reduce falsos negativos en filas problemáticas (#14, #15, #16) que tienen
+  profesiones genéricas no enumeradas explícitamente en el PDF
+- Estabiliza recall entre runs (variabilidad LLM compensada por diccionario)
+- Da al cliente una "red de seguridad" auditable — sabe cuándo el sistema
+  rellenó vs cuándo extrajo del PDF
+
 ## Otras mejoras menores (backlog)
 
 1. **Profesiones combinadas** — el LLM ocasionalmente concatena dos profesiones
@@ -166,13 +252,15 @@ Reactivable si:
 
 3. **Anotar más golden sets** — Huancavelica solo tiene 1 anotado. Para
    métricas robustas necesitamos 3-5 TDRs distintos. Pedir al cliente.
+   (También prerequisito del diccionario de dominio — ver sección anterior).
 
 4. **Correr eval automáticamente en CI** — cuando se pushea a main, correr
    eval contra el golden y fallar si F1 baja >0.05 vs baseline.
 
 5. **Visualización de cross-row contamination en UI** — marcar visualmente en
    `/jobs/[id]` qué profesiones parecen "fuera de lugar" (típicamente las que
-   no matchean profesiones esperadas según el cargo).
+   no matchean profesiones esperadas según el cargo). Esto se beneficia
+   directamente del validador del diccionario de dominio (modo 2).
 
 ## Decisión y próximo paso
 
