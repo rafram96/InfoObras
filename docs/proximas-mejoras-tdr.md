@@ -193,6 +193,36 @@ Opción A (aunque se beneficia), B.2 tiene complicaciones propias.
 5. **Cross-row en B.2**: igual que en B.1, la fila #10 a veces hereda cargos
    de #9 o #11 cuando se procesa todo junto.
 
+6. **Field bleed (B.2 → tiempo)**: el contenido del campo "TRABAJOS O
+   PRESTACIONES" se concatena con "TIEMPO DE EXPERIENCIA" cuando el LLM no
+   distingue bien los límites de columna. La frase "en la supervisión y/o
+   ejecución de obras en la especialidad..." termina en el campo tiempo
+   en lugar de quedarse solo en cargos_similares.
+
+### Ejemplo concreto observado — fila #5 (Huancavelica)
+
+(Solo campos B.2. El extractor de B.1 — `profesiones_aceptadas` — funciona
+suficientemente bien y se considera fuera del alcance de este rework.)
+
+PDF de B.2 dice:
+
+| Columna             | Valor literal                                                                                                                                                                                                                                |
+|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| TIEMPO              | "Experiencia mínima de (36) meses"                                                                                                                                                                                                            |
+| TRABAJOS / PRESTACIONES | "Especialista en estructuras y/o jefe de estructuras y/o Ingeniero Estructural y/o Especialista en diseño estructural y/o Especialista en Estructuras y edificaciones y/o la combinación de estos, en la supervisión y/o ejecución de obras en la especialidad 'edificaciones y afines' y la subespecialidad 'establecimientos de salud'." |
+
+Pipeline produjo:
+
+| Campo               | Valor obtenido                                                                                                       | Diagnóstico        |
+|---------------------|----------------------------------------------------------------------------------------------------------------------|--------------------|
+| tiempo_meses        | `"36 meses — Experiencia mínima de (36) meses en la supervisión y/o ejecución de obras en la"`                        | **Field bleed**: pegó parte del campo "TRABAJOS O PRESTACIONES" al tiempo. Debería ser solo `36`. |
+| tipo_obra_valido    | `"establecimientos de salud"`                                                                                        | ✅ correcto        |
+| cargos_similares    | `["Especialista en estructuras", "Jefe de estructuras"]`                                                             | **Recall bajo**: solo 2 de 5 cargos. Faltan "Ingeniero Estructural", "Especialista en diseño estructural", "Especialista en Estructuras y edificaciones". |
+
+Esta fila concentra los 2 problemas más visibles de B.2: field bleed adyacente
+(tiempo ↔ trabajos) y recall conservador en la enumeración de cargos. El
+rework debe estabilizar ambas en simultáneo.
+
 ### Approaches a evaluar (cuando se aborde)
 
 **Approach 1: Extracción fila-por-fila (parte de Opción A)**
