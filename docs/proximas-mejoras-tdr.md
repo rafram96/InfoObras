@@ -362,69 +362,90 @@ PROFESIONES_TIPICAS_POR_CARGO = {
 - Da al cliente una "red de seguridad" auditable — sabe cuándo el sistema
   rellenó vs cuándo extrajo del PDF
 
-## Evaluar cambio de Qwen 2.5 por Gemma 3
+## Evaluar cambio de Qwen 2.5 por Gemma 4
 
-**Prioridad**: MEDIA / experimento. Idea exploratoria, no urgente.
+**Prioridad**: MEDIA / experimento. Lanzamiento reciente de Google
+DeepMind (2 de abril 2026), licencia Apache 2.0, vale la pena
+evaluarlo en serio.
 
 ### Motivación
 
-Hoy usamos `qwen2.5:14b` (extracción) y `qwen2.5vl:7b` (visión). Gemma 3 de
-Google (lanzado 2025) tiene varias variantes que podrían valer la pena
-evaluar:
+Hoy usamos `qwen2.5:14b` (extracción) y `qwen2.5vl:7b` (visión). Gemma 4 de
+Google trajo 4 variantes pensadas para distintos perfiles de hardware, todas
+con ventajas concretas para nuestro caso:
 
-- **Gemma 3 27B** — más grande que Qwen 14B, podría mejorar comprensión de
-  textos complejos como B.2
-- **Gemma 3 12B** — comparable en VRAM a Qwen 14B, más rápido
-- **Gemma 3 con vision nativa** — reemplaza qwen2.5vl:7b (que falló en B.2)
+- **Gemma 4 31B Dense** — ranking #3 en Arena AI entre modelos abiertos,
+  vence a modelos 20× su tamaño en parámetros. Si entra en VRAM, es upgrade
+  directo del 14B.
+- **Gemma 4 26B MoE** — Mixture of Experts, ranking #6. Inferencia más
+  rápida porque solo activa ~5B params por token.
+- **Gemma 4 E4B (Effective 4B)** — pensado para edge/consumer GPUs.
+  Probable reemplazo del qwen2.5vl:7b si se mantiene la calidad.
+- **Gemma 4 E2B** — para smartphones / Raspberry Pi (no aplica a nuestro
+  caso, pero útil saber).
+
+### Por qué importa para este pipeline
+
+1. **Contexto 256K** — vs Qwen 14B en 12-16K. Permitiría meter TDRs enteros
+   sin chunkear, simplificando la extracción y posiblemente reduciendo
+   cross-row contamination.
+2. **Vision nativa** — multimodal de fábrica. El experimento VL con
+   qwen2.5vl:7b devolvió B.2=0 filas (saturación de imágenes). Gemma 4
+   multimodal podría reactivar la rama `feat/tdr-vl-extraction` con un VL
+   más capaz.
+3. **Reasoning agentic** — diseñado para workflows agentic, lo que se
+   alinea con futuras iteraciones tipo "extracción fila-por-fila con
+   razonamiento" (Opción A).
+4. **140+ idiomas** — debería manejar español peruano sin problema.
+5. **Apache 2.0** — sin restricciones comerciales.
 
 ### Lo que habría que probar
 
-1. **Pull de Gemma 3 a Ollama** y benchmarkear con el TDR Huancavelica
-   - Misma estructura de prompts, solo cambia el modelo
-   - Comparar F1 profesiones, F1 cargos similares, latencia, VRAM
-   - Si está mejor → considerar migración
-
-2. **Evaluar Gemma 3 vision** para extracción VL TDR
-   - El experimento VL con qwen2.5vl:7b devolvió B.2=0 filas (saturación)
-   - Gemma 3 multimodal podría manejar mejor las imágenes verbosas
-   - Reactivaría la rama `feat/tdr-vl-extraction` con un VL más capaz
+1. **Pull de Gemma 4 a Ollama** (cuando esté disponible — verificar
+   `ollama pull gemma4:26b-moe` o equivalente)
+2. **Smoke test contra TDR Huancavelica** con los mismos prompts actuales
+3. **Eval side-by-side** vs Qwen 2.5 14B usando el script `evaluar_tdr.py`
+4. **Probar Gemma 4 E4B vision** para B.2 (la parte que falló con qwen2.5vl)
 
 ### Riesgos
 
-- **Calidad en español**: Qwen 2.5 está bien afinado para español (Alibaba
-  apunta fuerte a español). Gemma puede ser inferior en jerga peruana,
-  formato OSCE, etc. Hay que validar empíricamente.
-- **Re-engineering de prompts**: cada modelo responde distinto a las mismas
-  instrucciones. Lo que funciona para Qwen puede fallar para Gemma. Testing
-  necesario antes de migrar.
-- **Mismo problema cross-row**: si el bug es del enfoque (procesar todo B.1
-  junto), cambiar de modelo no resuelve. Opción A (fila-por-fila) es
-  ortogonal y debería abordarse primero.
-- **VRAM**: Gemma 3 27B puede no caber en los 16 GB del Quadro RTX 5000 con
-  num_ctx alto. Validar antes.
+- **Disponibilidad inmediata en Ollama**: el modelo es muy reciente. Quizás
+  haya que esperar 1-2 semanas a que esté empaquetado en Ollama o usar la
+  versión raw vía Hugging Face + GGUF.
+- **VRAM con 31B**: en los 16 GB del Quadro RTX 5000 podría no caber con
+  num_ctx alto incluso cuantizado (Q4_K_M). El 26B MoE es más viable —
+  carga 26B pero solo activa ~5B por token.
+- **Re-engineering de prompts**: cada modelo responde distinto. Las reglas
+  que funcionan para Qwen podrían no traducir directo. Testing necesario.
+- **Cross-row sigue siendo ortogonal**: si el bug es del enfoque (procesar
+  todo B.1 junto), cambiar de modelo no resuelve. Opción A debería seguir
+  siendo prioridad.
 
 ### Estimación
 
 | Tarea                                                  | Esfuerzo |
 |--------------------------------------------------------|----------|
-| Pull Gemma 3 (12B y 27B) a Ollama                      | 30 min   |
+| Pull Gemma 4 (26B MoE + E4B vision) a Ollama           | 30 min - 2 h (si hay que GGUF-ear manualmente) |
 | Smoke test contra Huancavelica con prompt actual       | 1 h      |
 | Si pasa smoke, eval comparativo vs Qwen 2.5            | 2-3 h    |
 | Tweaks de prompt si Gemma necesita ajustes             | 2-4 h    |
+| Probar Gemma 4 vision contra B.1 y B.2                 | 2-3 h    |
 | Decisión: migrar / quedarse con Qwen / esperar         | -        |
-| **Total** (solo evaluación)                            | **medio día** |
+| **Total** (solo evaluación)                            | **1 día** |
 
 ### Cuándo abordarlo
 
-**No bloquea nada hoy**. Es un experimento que vale la pena correr cuando:
-- Después de implementar Opción A (para tener un baseline limpio sin
-  cross-row antes de cambiar el modelo)
-- Si Gemma 3 saca una versión específicamente mejor para español
-- Si el cliente reporta que la calidad actual no escala con TDRs más
-  complejos
+**No bloquea nada hoy**, pero es de los experimentos más prometedores:
 
-Idealmente se hace en una rama nueva tipo `feat/eval-gemma3` con eval
-side-by-side, igual que hicimos con la rama VL.
+- Esperar 1-2 semanas para que Gemma 4 esté maduro en Ollama (menos riesgo
+  de bugs de empaquetado)
+- Idealmente **después** de Opción A (para tener un baseline limpio sin
+  cross-row antes de cambiar el modelo)
+- Si el cliente reporta que la calidad actual no escala con TDRs más
+  complejos, esto se vuelve prioridad alta
+
+Idealmente se hace en rama nueva `feat/eval-gemma4` con eval side-by-side,
+igual que hicimos con la rama VL.
 
 ## Verificaciones externas automatizables (SUNAT, colegios)
 
