@@ -362,6 +362,70 @@ PROFESIONES_TIPICAS_POR_CARGO = {
 - Da al cliente una "red de seguridad" auditable — sabe cuándo el sistema
   rellenó vs cuándo extrajo del PDF
 
+## Evaluar cambio de Qwen 2.5 por Gemma 3
+
+**Prioridad**: MEDIA / experimento. Idea exploratoria, no urgente.
+
+### Motivación
+
+Hoy usamos `qwen2.5:14b` (extracción) y `qwen2.5vl:7b` (visión). Gemma 3 de
+Google (lanzado 2025) tiene varias variantes que podrían valer la pena
+evaluar:
+
+- **Gemma 3 27B** — más grande que Qwen 14B, podría mejorar comprensión de
+  textos complejos como B.2
+- **Gemma 3 12B** — comparable en VRAM a Qwen 14B, más rápido
+- **Gemma 3 con vision nativa** — reemplaza qwen2.5vl:7b (que falló en B.2)
+
+### Lo que habría que probar
+
+1. **Pull de Gemma 3 a Ollama** y benchmarkear con el TDR Huancavelica
+   - Misma estructura de prompts, solo cambia el modelo
+   - Comparar F1 profesiones, F1 cargos similares, latencia, VRAM
+   - Si está mejor → considerar migración
+
+2. **Evaluar Gemma 3 vision** para extracción VL TDR
+   - El experimento VL con qwen2.5vl:7b devolvió B.2=0 filas (saturación)
+   - Gemma 3 multimodal podría manejar mejor las imágenes verbosas
+   - Reactivaría la rama `feat/tdr-vl-extraction` con un VL más capaz
+
+### Riesgos
+
+- **Calidad en español**: Qwen 2.5 está bien afinado para español (Alibaba
+  apunta fuerte a español). Gemma puede ser inferior en jerga peruana,
+  formato OSCE, etc. Hay que validar empíricamente.
+- **Re-engineering de prompts**: cada modelo responde distinto a las mismas
+  instrucciones. Lo que funciona para Qwen puede fallar para Gemma. Testing
+  necesario antes de migrar.
+- **Mismo problema cross-row**: si el bug es del enfoque (procesar todo B.1
+  junto), cambiar de modelo no resuelve. Opción A (fila-por-fila) es
+  ortogonal y debería abordarse primero.
+- **VRAM**: Gemma 3 27B puede no caber en los 16 GB del Quadro RTX 5000 con
+  num_ctx alto. Validar antes.
+
+### Estimación
+
+| Tarea                                                  | Esfuerzo |
+|--------------------------------------------------------|----------|
+| Pull Gemma 3 (12B y 27B) a Ollama                      | 30 min   |
+| Smoke test contra Huancavelica con prompt actual       | 1 h      |
+| Si pasa smoke, eval comparativo vs Qwen 2.5            | 2-3 h    |
+| Tweaks de prompt si Gemma necesita ajustes             | 2-4 h    |
+| Decisión: migrar / quedarse con Qwen / esperar         | -        |
+| **Total** (solo evaluación)                            | **medio día** |
+
+### Cuándo abordarlo
+
+**No bloquea nada hoy**. Es un experimento que vale la pena correr cuando:
+- Después de implementar Opción A (para tener un baseline limpio sin
+  cross-row antes de cambiar el modelo)
+- Si Gemma 3 saca una versión específicamente mejor para español
+- Si el cliente reporta que la calidad actual no escala con TDRs más
+  complejos
+
+Idealmente se hace en una rama nueva tipo `feat/eval-gemma3` con eval
+side-by-side, igual que hicimos con la rama VL.
+
 ## Verificaciones externas automatizables (SUNAT, colegios)
 
 **Prioridad**: BAJA / extra. No bloquea el deadline, mejora cobertura de
