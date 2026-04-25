@@ -155,6 +155,97 @@ Reactivable si:
 - Splitting por imagen-página resuelve la saturación
 - Cliente acepta latencia mayor
 
+## B.2 — extracción de cargos similares necesita rework dedicado
+
+**Estado actual**: peor parte del pipeline. F1 ~0.30, recall ~26%. Es donde
+el sistema más se queda corto en cargos_similares_validos. Independiente de
+Opción A (aunque se beneficia), B.2 tiene complicaciones propias.
+
+### Por qué B.2 es harder que B.1
+
+| Aspecto                          | B.1                                | B.2                                  |
+|----------------------------------|------------------------------------|--------------------------------------|
+| Estructura por celda             | corta (1-3 líneas)                 | párrafo verboso (15-25 líneas)       |
+| Datos por extraer                | 1 (lista de profesiones)           | 4 (cargos, tiempo, tipo obra, descripción) |
+| Patrón típico                    | "X y/o Y y/o Z"                    | "[prefijo1] y/o [prefijo2] en/de: [sufijo1] y/o [sufijo2]" |
+| Cardinalidad de combinaciones    | 2-5 cargos                         | 6 prefijos × 5 sufijos = 30 combinaciones implicitas |
+| Info estructurada en lista       | sí (nombres puros)                 | no (lista mezclada con prosa: "en la supervisión y/o ejecución") |
+| Footnotes confunden el LLM       | rara vez                           | frecuente (76, 77, 78, etc.)         |
+
+### Problemas específicos observados
+
+1. **Prefijo-sufijo mal expandido**: el LLM no expande "Ingeniero y/o supervisor
+   en/de: Eléctrico y/o Electricista" a "Ingeniero Eléctrico, Ingeniero
+   Electricista, Supervisor Eléctrico, Supervisor Electricista". Se queda con
+   los prefijos sueltos o con los sufijos sueltos.
+
+2. **Termina la lista demasiado pronto**: el LLM corta la enumeración cuando
+   ve "o la combinación de estos" pero a veces también corta antes con frases
+   como "y/o" mal interpretadas.
+
+3. **Mezcla cargos con tipo de obra**: extrae "edificaciones y afines" como
+   cargo cuando es la especialidad. El validador `_es_profesion_real` ayuda
+   pero no captura todos los casos.
+
+4. **Recall conservador**: extrae 3-5 cargos por fila cuando el TDR enumera
+   6-12. Pierde variantes intermedias.
+
+5. **Cross-row en B.2**: igual que en B.1, la fila #10 a veces hereda cargos
+   de #9 o #11 cuando se procesa todo junto.
+
+### Approaches a evaluar (cuando se aborde)
+
+**Approach 1: Extracción fila-por-fila (parte de Opción A)**
+
+Una llamada LLM por fila B.2. El párrafo individual es más manejable. Mejora
+esperada: recall 26% → 50-60%. Latencia +30-60s por TDR.
+
+**Approach 2: Pre-procesamiento con regex antes del LLM**
+
+Detectar el patrón `[prefijo] en/de: [sufijos]` con regex, expandir las
+combinaciones programáticamente, mandar al LLM solo para validación final.
+Mejora esperada: recall 26% → 70-80% **si la regex es robusta**. Riesgo:
+regex frágil con TDRs que no siguen el patrón estándar.
+
+**Approach 3: Diccionario de domain como guía**
+
+Cargos típicos por cargo principal en construcción hospitalaria (ej:
+ESPECIALISTA EN ESTRUCTURAS típicamente acepta "Especialista en Estructuras",
+"Jefe de Estructuras", "Ingeniero Estructural"). Usado como few-shot examples
+en el prompt + validador post-extracción. Ver sección "Diccionario de dominio"
+abajo.
+
+**Approach 4: Enfoque híbrido — recomendado**
+
+Combinar los 3 anteriores:
+1. Extracción fila-por-fila (Approach 1) para aislar contexto
+2. Pre-procesamiento regex (Approach 2) cuando detectes el patrón estándar
+3. Diccionario (Approach 3) como red de seguridad — flag las filas donde
+   el pipeline no extrajo cargos típicos esperados del cargo principal
+
+### Estimación
+
+| Tarea                                                      | Esfuerzo |
+|------------------------------------------------------------|----------|
+| Splitter de filas B.2 (más complejo que B.1 por verbosidad)| 3-4 h    |
+| Prompt fila-por-fila acotado para B.2                      | 2-3 h    |
+| Pre-procesador regex de patrón prefijo-sufijo              | 4-6 h    |
+| Validador con diccionario de dominio                       | 2-3 h    |
+| Tests + iteración con golden multi-TDR                     | 4-5 h    |
+| **Total**                                                  | **2-3 días** |
+
+### Mejora esperada
+
+- Cargos similares F1: 0.30 → 0.65-0.75
+- Recall: 26% → 70%+
+- Estabilidad entre runs: ±0.03 → ±0.01
+
+### Cuándo abordarlo
+
+**Después** de Opción A para B.1 (más simple, gana experiencia en row-by-row).
+**Antes** de cerrar el deadline si el cliente reporta que cargos_similares es
+insuficiente para su flujo de matching contra CVs.
+
 ## Diccionario de dominio (construcción hospitalaria)
 
 ### Idea
