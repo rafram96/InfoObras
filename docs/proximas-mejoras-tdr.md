@@ -320,8 +320,10 @@ Es cierto, pero algunos colegios sí publican padrón:
    Estructuras" vs "Jefe en Estructuras"). Normalizador antes del eval/output.
 
 3. **Anotar más golden sets** — Huancavelica solo tiene 1 anotado. Para
-   métricas robustas necesitamos 3-5 TDRs distintos. Pedir al cliente.
-   (También prerequisito del diccionario de dominio — ver sección anterior).
+   métricas robustas necesitamos 3-5 TDRs distintos. Prerequisito del
+   diccionario de dominio (sección anterior). Ver `tests/golden/README.md`
+   sección "Donde conseguir mas TDRs para anotar" para fuentes (cliente
+   primero, SEACE como respaldo) + tips de anotación.
 
 4. **Correr eval automáticamente en CI** — cuando se pushea a main, correr
    eval contra el golden y fallar si F1 baja >0.05 vs baseline.

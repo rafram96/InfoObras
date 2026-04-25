@@ -94,3 +94,73 @@ Profesiones:
 
 Significa: de 49 profesiones que extrajo, 42 eran correctas (85.7% precision).
 De 58 profesiones en el golden, encontro 42 (72.3% recall). Falta mejorar recall.
+
+## Donde conseguir mas TDRs para anotar
+
+El golden actual solo cubre 1 TDR (Huancavelica). Para metricas robustas
+y para implementar el diccionario de dominio (ver
+`docs/proximas-mejoras-tdr.md`) necesitamos 3-5 TDRs distintos.
+
+Ordenado por utilidad:
+
+### 1. Pedir al cliente (mejor)
+
+Inmobiliaria Alpamayo / Indeconsult tiene archivo de TDRs a los que ya
+postularon. Esos reflejan exactamente la variedad real que el sistema
+procesara, y el cliente puede ayudar a anotar el golden.
+
+Pedir 3-4 TDRs ganados/perdidos del 2023-2025, idealmente de proveedores
+distintos (MINSA, EsSalud, GORE, MUNI) para variedad.
+
+### 2. SEACE oficial (publico, gratis)
+
+Portal: https://prod1.seace.gob.pe/seacebus-uiwd-pub/
+
+Filtros:
+- Tipo de procedimiento: Concurso Publico o Adjudicacion Simplificada
+- Objeto de contratacion: Servicios (la supervision es servicio, no obra)
+- Descripcion del objeto: keywords como "supervision" + "hospital",
+  "supervision" + "establecimiento de salud", "RTM" o "recursos
+  tecnicos minimos"
+- Año de convocatoria: 2024-2025
+
+Para descargar el TDR:
+1. Click en el procedimiento
+2. Pestaña "Documentos del procedimiento" o "Bases integradas"
+3. PDFs descargables — TDR esta dentro de "Bases" (Capitulo III o seccion B)
+
+### 3. Aggregadores con UI mas limpia
+
+- https://www.contrataciones.pe/ (filtros por sector salud)
+- https://www.todolicitaciones.pe/ (alertas por keyword)
+- https://www.perulicitaciones.com/
+
+Igual descargan los PDFs de SEACE pero la UX es mejor para buscar.
+
+### 4. Datos abiertos OSCE (para analisis batch)
+
+https://contratacionesabiertas.osce.gob.pe/busqueda
+
+Exporta procedimientos en JSON. Util si en el futuro queremos analizar
+100+ TDRs automaticamente para construir el diccionario de dominio.
+
+## Tips para anotar el siguiente golden
+
+1. **Variedad importa mas que cantidad**: 3 TDRs de hospitales distintos
+   > 5 del mismo MINSA. Idealmente:
+   - 1 hospital nivel III (mas complejo, mas cargos)
+   - 1 establecimiento nivel I-2 / I-3 (mas simple)
+   - 1 con peculiaridades (ej: contingencia, terreno especial)
+
+2. **Procesa primero por el pipeline** (sube PDF -> ve output) ANTES de
+   anotar manualmente. Asi tienes contra que comparar y ves donde "le
+   cuesta" al pipeline.
+
+3. **Anota basado en el output**: copia las filas que el pipeline acerto y
+   corrige solo lo que esta mal. Es mucho mas rapido que anotar desde cero.
+
+4. **Naming**: usa `{nombre_descriptivo}.json` (ej: `rtm_minsa_arequipa.json`).
+   Recuerda agregar la entrada al `.gitignore` whitelist:
+   ```
+   !tests/golden/{nombre}.json
+   ```
