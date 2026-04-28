@@ -436,24 +436,13 @@ def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
             fecha_paralizacion=_parse_fecha_ddmmyyyy(r.get("FechaParalizacion")),
             dias_paralizado=int(r.get("DiasParalizado", 0) or 0),
             causal=r.get("Causal"),
-            avance_fisico_programado=_to_float(
-                r.get("AvanceFisicoProgramado") or r.get("AvProg") or r.get("PctAvFisicoProg")
-            ),
-            avance_fisico_real=_to_float(
-                r.get("AvanceFisicoReal") or r.get("AvReal") or r.get("PctAvFisicoReal")
-            ),
-            valorizado_programado=_to_float(
-                r.get("ValorizadoProgramado") or r.get("MontoProg") or r.get("ValProgramado")
-            ),
-            valorizado_real=_to_float(
-                r.get("ValorizadoReal") or r.get("MontoReal") or r.get("ValReal")
-            ),
-            pct_ejecucion_financiera=_to_float(
-                r.get("PorcentajeEjecucionFinanciera") or r.get("PctEjeFinanciera")
-            ),
-            monto_ejecucion_financiera=_to_float(
-                r.get("MontoEjecucionFinanciera") or r.get("MontoEjeFinanciera")
-            ),
+            # Nombres confirmados via probe contra CUI 2427358 (Tambobamba):
+            avance_fisico_programado=_to_float(r.get("PorcProgramadoFisico")),
+            avance_fisico_real=_to_float(r.get("PorcRealFisico")),
+            valorizado_programado=_to_float(r.get("ProgramadoFinanc")),
+            valorizado_real=_to_float(r.get("RealFinanc")),
+            pct_ejecucion_financiera=_to_float(r.get("PorcEjecFinanc")),
+            monto_ejecucion_financiera=_to_float(r.get("MontoEjecFinanc")),
         ))
     return avances
 
@@ -731,8 +720,24 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
         # Tomar la primera obra (si hay múltiples, es desambiguación futura)
         obra_raw = obras[0]
         obra_id = obra_raw.get("codigoObra")
+
+        # InfoObras a veces devuelve la obra sin codigoObra en el 1er request
+        # (warmup de session). Reintentar 1 vez con un pequeno delay.
         if not obra_id:
-            logger.warning("InfoObras: obra sin codigoObra para CUI %s", cui)
+            logger.info(
+                "InfoObras: 1er request sin codigoObra para CUI %s, reintentando",
+                cui,
+            )
+            time.sleep(2.0)
+            obras_retry = _buscar_por_cui(session, cui)
+            if obras_retry:
+                obra_raw = obras_retry[0]
+                obra_id = obra_raw.get("codigoObra")
+
+        if not obra_id:
+            logger.warning(
+                "InfoObras: obra sin codigoObra para CUI %s tras reintento", cui,
+            )
             return None
 
         logger.info(
