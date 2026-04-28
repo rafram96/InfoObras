@@ -307,6 +307,9 @@ def _parse_js_vars(html: str) -> dict[str, list]:
     Variables `null` o no-arrays se omiten silenciosamente.
     """
     variables: dict[str, list] = {}
+    nulls: list[str] = []  # vars que aparecen como `null` (existen pero vacias)
+    fallidas: list[str] = []  # vars que existen pero no se pudieron parsear
+
     for match in _JS_VAR_START_RE.finditer(html):
         nombre = match.group(1)
         pos = match.end()
@@ -317,22 +320,34 @@ def _parse_js_vars(html: str) -> dict[str, list]:
             continue
         ch = html[pos]
         if ch == "n":
-            # Probablemente `null` — variable vacia
             if html[pos:pos + 4] == "null":
                 variables[nombre] = []
+                nulls.append(nombre)
             continue
         if ch != "[" and ch != "{":
             continue
         try:
             obj, _ = _JSON_DECODER.raw_decode(html, pos)
         except json.JSONDecodeError:
+            fallidas.append(nombre)
             logger.warning("InfoObras: no se pudo parsear var %s en pos %d", nombre, pos)
             continue
         if isinstance(obj, list):
             variables[nombre] = obj
         elif isinstance(obj, dict):
-            # Algunas variables podrian ser objetos sueltos — los envolvemos
             variables[nombre] = [obj]
+
+    # Log diagnostico: que variables se encontraron y con cuantos registros
+    if logger.isEnabledFor(logging.INFO):
+        resumen = ", ".join(
+            f"{n}={len(v)}" for n, v in sorted(variables.items())
+        )
+        logger.info("InfoObras [vars JS]: %s", resumen or "(ninguna)")
+        if nulls:
+            logger.info("InfoObras [vars null]: %s", ", ".join(sorted(nulls)))
+        if fallidas:
+            logger.warning("InfoObras [vars no parseadas]: %s", ", ".join(fallidas))
+
     return variables
 
 
@@ -400,6 +415,11 @@ def _to_float(v) -> Optional[float]:
 
 def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
     """Convierte la lista cruda de lAvances a AvanceMensual."""
+    if raw_list and logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "InfoObras [lAvances][1] keys: %s",
+            sorted(raw_list[0].keys()),
+        )
     avances = []
     for r in raw_list:
         anio_raw = r.get("Anio", "0")
@@ -440,6 +460,11 @@ def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
 
 def _procesar_contratistas(raw_list: list[dict]) -> list[ContratistaInfo]:
     """Convierte la lista cruda de lContratista a ContratistaInfo."""
+    if raw_list and logger.isEnabledFor(logging.INFO):
+        logger.info(
+            "InfoObras [lContratista][1] keys: %s",
+            sorted(raw_list[0].keys()),
+        )
     contratistas = []
     for r in raw_list:
         contratistas.append(ContratistaInfo(
@@ -452,6 +477,26 @@ def _procesar_contratistas(raw_list: list[dict]) -> list[ContratistaInfo]:
             fecha_fin_contrato=_parse_fecha_ddmmyyyy(r.get("FechaFinContrato")),
         ))
     return contratistas
+
+
+def _sintetizar_contratista_de_busqueda(obra_raw: dict) -> Optional[ContratistaInfo]:
+    """
+    Cuando lContratista viene vacio pero el endpoint de busqueda si tiene
+    los datos del ejecutor, sintetiza un registro para que la UI no
+    muestre 'Contratistas: 0' incorrectamente.
+    """
+    nombre = obra_raw.get("nombreEjecutor") or obra_raw.get("ejecutor")
+    if not nombre:
+        return None
+    return ContratistaInfo(
+        tipo_empresa="",
+        ruc=obra_raw.get("rucEjecutor") or obra_raw.get("ruc"),
+        nombre_empresa=str(nombre).strip(),
+        monto_soles=obra_raw.get("montoObraSoles"),
+        numero_contrato=None,
+        fecha_contrato=_parse_timestamp_json(obra_raw.get("fechaIniObra")),
+        fecha_fin_contrato=_parse_timestamp_json(obra_raw.get("fechaFinObra")),
+    )
 
 
 def _procesar_modificaciones_plazo(raw_list: list[dict]) -> list[ModificacionPlazoInfo]:
@@ -706,6 +751,16 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
         residentes = _procesar_residentes(datos.get("lResidente", []))
         avances = _procesar_avances(datos.get("lAvances", []))
         contratistas = _procesar_contratistas(datos.get("lContratista", []))
+        # Fallback: si el array embebido viene vacio pero el endpoint de
+        # busqueda trae nombreEjecutor + rucEjecutor, sintetizar 1 entrada.
+        if not contratistas:
+            sint = _sintetizar_contratista_de_busqueda(obra_raw)
+            if sint:
+                contratistas = [sint]
+                logger.info(
+                    "InfoObras: lContratista vacio, sintetizado desde busqueda: %s",
+                    sint.nombre_empresa,
+                )
         modificaciones_plazo = _procesar_modificaciones_plazo(datos.get("lModificacionPlazo", []))
         entregas_terreno = _procesar_entregas_terreno(datos.get("lEntregaTerreno", []))
         adendas = _procesar_adendas(datos.get("lAdenda", []))
