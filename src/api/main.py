@@ -2037,7 +2037,16 @@ async def delete_job(job_id: str):
         shutil.rmtree(uploads_dir, ignore_errors=True)
     job_log = _JOB_LOGS_DIR / f"job-{job_id}.log"
     if job_log.exists():
-        job_log.unlink(missing_ok=True)
+        try:
+            job_log.unlink(missing_ok=True)
+        except (PermissionError, OSError) as e:
+            # En Windows el handler del logger puede tener el archivo abierto
+            # mientras el job todavia esta corriendo (cancelado vs terminado).
+            # No bloqueamos el delete por esto — el archivo se va a re-borrar
+            # en una limpieza posterior cuando el handler se libere.
+            logger.warning(
+                "No se pudo borrar log de %s: %s — quedara como huerfano", job_id, e,
+            )
     llm_calls_dir = Path("data/llm_calls") / job_id
     if llm_calls_dir.exists():
         shutil.rmtree(llm_calls_dir, ignore_errors=True)

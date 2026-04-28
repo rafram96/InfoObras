@@ -70,24 +70,39 @@ cp .env .env.qwen-backup
 
 ### 4. Editar .env con la nueva config
 
+⚠️ **Importante para VRAM 16 GB**: Gemma 4 26B + `num_ctx=32768` + Gemma 4 26B vision NO cabe.
+La KV cache (~6-8 GB) más el modelo (~18 GB) excede los 16 GB y Ollama hace spillover a CPU
+(prefill cae de ~500 tok/s a ~8 tok/s — pipeline se vuelve inutilizable).
+
+**Combinación que SÍ funciona en 16 GB**:
+
 ```env
-# ── Modelos: usar Gemma 4 26B para texto Y visión (unificado) ──
+# ── Modelos: Gemma para texto, Qwen-VL para visión ──
 QWEN_MODEL=gemma4:26b
-QWEN_VL_MODEL=gemma4:26b
-# Si gemma4:26b no entra en VRAM:
-# QWEN_MODEL=gemma4:e4b
-# QWEN_VL_MODEL=gemma4:e4b
+QWEN_VL_MODEL=qwen2.5vl:7b   # mantener Qwen-VL chico (4.5 GB), evita VRAM contention
 
 # ── Context window ──
-QWEN_NUM_CTX=32768   # antes 16384
+QWEN_NUM_CTX=12288   # con Gemma 26B en 16 GB. KV cache ~3 GB + modelo 18 GB = entra apretado.
 
-# ── Sampling para Gemma 4 (en JSON-extracción usamos compromiso bajo) ──
+# ── Sampling para Gemma 4 ──
 QWEN_TEMPERATURE=0.3
 QWEN_TOP_P=0.9
 QWEN_TOP_K=40
 
 # ── Keep alive (importante para Gemma, su carga es ~30s) ──
 QWEN_KEEP_ALIVE=10m
+```
+
+**Si el modelo sigue cayendo a CPU** (mira `prefill=X tok/s (CPU/RAM)` en logs), tienes 2 opciones:
+
+```env
+# Opción A: bajar más el context
+QWEN_NUM_CTX=8192
+
+# Opción B (más radical): usar la variante chica de Gemma 4
+QWEN_MODEL=gemma4:e4b
+QWEN_NUM_CTX=32768
+# Calidad ~10 puntos menos en MMMLU pero CABE holgado en VRAM
 ```
 
 ### 5. Reiniciar uvicorn
