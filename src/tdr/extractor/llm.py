@@ -12,7 +12,25 @@ from openai import OpenAI
 from src.tdr.config.settings import (
     QWEN_OLLAMA_BASE_URL, QWEN_OLLAMA_API_KEY,
     QWEN_MODEL, QWEN_MAX_TOKENS, QWEN_TIMEOUT, QWEN_NUM_CTX,
+    QWEN_TEMPERATURE, QWEN_TOP_P, QWEN_TOP_K, QWEN_KEEP_ALIVE,
 )
+
+
+def _build_extra_body() -> dict:
+    """
+    Arma extra_body para client.chat.completions.create() con todas las
+    opciones especificas de Ollama. Toma valores de settings.py para que
+    el .env controle todo (deterministico Qwen vs sampling Gemma 4).
+    """
+    options: dict = {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX}
+    if QWEN_TOP_P != 1.0:
+        options["top_p"] = QWEN_TOP_P
+    if QWEN_TOP_K > 0:
+        options["top_k"] = QWEN_TOP_K
+    return {
+        "keep_alive": QWEN_KEEP_ALIVE,
+        "options": options,
+    }
 from src.tdr.config.signals import PROMPTS
 from src.tdr.extractor.scorer import Block
 
@@ -102,24 +120,30 @@ def _get_client() -> OpenAI:
 
 
 def _limpiar_respuesta(raw: str) -> str:
-    """Limpia </think>, texto previo, y bloques markdown."""
-    # 1. Quitar bloque <think>...</think>
+    """Limpia </think>, <|channel|>thought, texto previo, y bloques markdown."""
+    import re
+
+    # 1. Gemma 4: bloque de razonamiento explicito si thinking esta activo.
+    #    Formato: <|channel|>thought\n[...reasoning...]<channel|>[respuesta]
+    raw = re.sub(
+        r"<\|channel\|>thought\n.*?<channel\|>", "", raw, flags=re.DOTALL,
+    )
+
+    # 2. Qwen 2.5 con think mode: <think>...</think>
     if "</think>" in raw:
         raw = raw.split("</think>")[-1].strip()
 
-    # 2. Buscar bloque ```json ... ``` en CUALQUIER parte de la respuesta
-    #    (Qwen a veces mete "Basándome en..." antes del JSON)
-    import re
+    # 3. Bloque ```json ... ``` en cualquier parte (modelo mete preambulo)
     match = re.search(r"```(?:json)?\s*\n?(\{.*?})\s*```", raw, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    # 3. Buscar el primer { ... } directo (sin bloque markdown)
+    # 4. Buscar el primer { ... } directo (sin bloque markdown)
     brace_start = raw.find("{")
     if brace_start > 0:
         raw = raw[brace_start:]
 
-    # 4. Limpiar backticks sueltos
+    # 5. Limpiar backticks sueltos
     raw = raw.strip("`").strip()
     if raw.startswith("json"):
         raw = raw[4:].strip()
@@ -382,12 +406,9 @@ def reextraer_profesiones_b1(texto_fuente: str, items: list) -> dict[int, list[s
         response = client.chat.completions.create(
             model=QWEN_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            temperature=QWEN_TEMPERATURE,
             max_tokens=QWEN_MAX_TOKENS,
-            extra_body={
-                "keep_alive": "10m",
-                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
-            },
+            extra_body=_build_extra_body(),
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -491,12 +512,9 @@ def retry_cargos_faltantes(
         response = client.chat.completions.create(
             model=QWEN_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            temperature=QWEN_TEMPERATURE,
             max_tokens=QWEN_MAX_TOKENS,
-            extra_body={
-                "keep_alive": "10m",
-                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
-            },
+            extra_body=_build_extra_body(),
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -633,18 +651,11 @@ def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
         response = client.chat.completions.create(
             model=QWEN_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            temperature=QWEN_TEMPERATURE,
             max_tokens=QWEN_MAX_TOKENS,
-            extra_body={
-                "keep_alive": "10m",
-                "options": {
-                    "num_gpu": 99,
-                    # Ventana de contexto completa. Default de Ollama es 4096 tok
-                    # que trunca prompts largos silenciosamente → causa principal
-                    # de alucinaciones en tablas TDR multi-pagina.
-                    "num_ctx": QWEN_NUM_CTX,
-                },
-            },
+            # extra_body con num_gpu=99, num_ctx (anti-truncado), top_p/top_k
+            # si configurados, y keep_alive del .env. Ver _build_extra_body().
+            extra_body=_build_extra_body(),
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:

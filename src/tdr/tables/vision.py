@@ -122,6 +122,24 @@ def _llamar_qwen_vl(
         f"({px_orig} px orig → {px_resized} px resized)"
     )
 
+    # Importes locales para no romper el bundle si settings se reorganiza.
+    from src.tdr.config.settings import (
+        QWEN_TEMPERATURE,
+        QWEN_TOP_P,
+        QWEN_TOP_K,
+        QWEN_KEEP_ALIVE,
+    )
+
+    options: dict = {
+        "temperature": QWEN_TEMPERATURE,
+        "num_predict": 2048,
+        "num_ctx": 16384,
+    }
+    if QWEN_TOP_P != 1.0:
+        options["top_p"] = QWEN_TOP_P
+    if QWEN_TOP_K > 0:
+        options["top_k"] = QWEN_TOP_K
+
     payload = {
         "model": QWEN_VL_MODEL,
         "messages": [
@@ -132,11 +150,8 @@ def _llamar_qwen_vl(
             }
         ],
         "stream": False,
-        "options": {
-            "temperature": 0,
-            "num_predict": 2048,
-            "num_ctx": 8192,
-        },
+        "options": options,
+        "keep_alive": QWEN_KEEP_ALIVE,
     }
 
     max_reintentos = 2

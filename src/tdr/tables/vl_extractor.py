@@ -37,6 +37,10 @@ from src.tdr.config.settings import (
     QWEN_VL_TIMEOUT,
     OLLAMA_BASE_URL,
     TABLE_VL_MAX_PX,
+    QWEN_TEMPERATURE,
+    QWEN_TOP_P,
+    QWEN_TOP_K,
+    QWEN_KEEP_ALIVE,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +81,18 @@ def _llamar_qwen_vl_json(
 
     logger.info(f"[vl-extractor] Enviando {len(imagenes)} imagen(es) al VL")
 
+    options: dict = {
+        "temperature": QWEN_TEMPERATURE,
+        "num_predict": max_tokens,
+        # num_ctx para vision: imagenes + prompt + output. Gemma 4 vision con
+        # imagenes de tablas detalladas necesita mas contexto que qwen2.5vl:7b.
+        "num_ctx": 16384,
+    }
+    if QWEN_TOP_P != 1.0:
+        options["top_p"] = QWEN_TOP_P
+    if QWEN_TOP_K > 0:
+        options["top_k"] = QWEN_TOP_K
+
     payload = {
         "model": QWEN_VL_MODEL,
         "messages": [
@@ -87,11 +103,8 @@ def _llamar_qwen_vl_json(
             }
         ],
         "stream": False,
-        "options": {
-            "temperature": 0,
-            "num_predict": max_tokens,
-            "num_ctx": 8192,
-        },
+        "options": options,
+        "keep_alive": QWEN_KEEP_ALIVE,
     }
 
     max_reintentos = 2
@@ -144,7 +157,13 @@ def _llamar_qwen_vl_json(
 
 
 def _limpiar_bloque_markdown(texto: str) -> str:
-    """Remueve ```json ... ``` y similares del raw del LLM."""
+    """Remueve ```json ... ```, bloques de thinking de Gemma 4, y similares."""
+    # Gemma 4 thinking: <|channel|>thought\n[...]<channel|>
+    texto = re.sub(
+        r"<\|channel\|>thought\n.*?<channel\|>", "", texto, flags=re.DOTALL,
+    )
+    # Qwen thinking: <think>...</think>
+    texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL)
     texto = texto.strip()
     # Caso: ```json\n{...}\n```
     m = re.search(r"```(?:json)?\s*(.+?)\s*```", texto, re.DOTALL)

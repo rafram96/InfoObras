@@ -93,10 +93,16 @@ try:
     )
     _vl_flag = os.getenv("USE_VL_TDR_EXTRACTION", "false").lower() == "true"
     _force_ocr = os.getenv("FORCE_MOTOR_OCR", "false").lower() == "true"
+    _temp = os.getenv("QWEN_TEMPERATURE", "0")
+    _top_p = os.getenv("QWEN_TOP_P", "1.0")
+    _top_k = os.getenv("QWEN_TOP_K", "0")
+    _keep_alive = os.getenv("QWEN_KEEP_ALIVE", "10m")
     print("=" * 70)
     print(f"  QWEN_MODEL              = {_STARTUP_QWEN_MODEL}")
     print(f"  QWEN_NUM_CTX            = {_STARTUP_NUM_CTX}")
     print(f"  QWEN_VL_MODEL           = {_STARTUP_QWEN_VL_MODEL}")
+    print(f"  Sampling                = T={_temp}  top_p={_top_p}  top_k={_top_k}")
+    print(f"  Keep alive              = {_keep_alive}")
     print(f"  .env QWEN_MODEL         = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
     print(f"  .env QWEN_NUM_CTX       = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
     print(f"  USE_VL_TDR_EXTRACTION   = {'TRUE (VL activo)' if _vl_flag else 'false (pipeline textual)'}")
