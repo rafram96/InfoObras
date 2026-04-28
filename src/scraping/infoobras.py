@@ -364,6 +364,57 @@ def _extraer_datos_ejecucion(session: requests.Session, obra_id: int) -> dict[st
     return _parse_js_vars(r.text)
 
 
+def _extraer_datos_preparacion(session: requests.Session, obra_id: int) -> dict[str, list]:
+    """
+    Descarga DatosPreparacion y extrae las variables JS embebidas.
+
+    Aunque el SCRAPER.md original decia que este endpoint cargaba todo
+    via AJAX, en realidad expone como variables JS embebidas:
+      - lSupervisor (historico completo de supervisores/inspectores)
+      - lResidente (historico completo de residentes)
+      - lPersonal (otros profesionales clave)
+      - lRevisionET (revisiones del expediente tecnico)
+
+    Para obras con plantilla nueva (PRONIS, hospitalarias 2023+), estos
+    datos NO aparecen en /Mapa/DatosEjecucion (solo lAvances), por lo
+    que es necesario consultar este endpoint complementario.
+    """
+    url = f"{BASE_WEB}/Mapa/DatosPreparacion"
+    session.headers["Accept"] = "text/html,*/*"
+    try:
+        r = session.get(url, params={"ObraId": obra_id}, timeout=30)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning("InfoObras: error en DatosPreparacion ObraId %s: %s", obra_id, e)
+        return {}
+    finally:
+        session.headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+    return _parse_js_vars(r.text)
+
+
+def _extraer_todos_los_datos(session: requests.Session, obra_id: int) -> dict[str, list]:
+    """
+    Descarga DatosEjecucion + DatosPreparacion y mergea sus variables JS.
+
+    DatosEjecucion → lAvances (+ lContratista, lModificacionPlazo, etc. en
+                     plantilla vieja; solo lAvances en plantilla nueva)
+    DatosPreparacion → lSupervisor, lResidente, lPersonal, lRevisionET
+
+    Si una variable aparece en ambos endpoints, prevalece la que tenga
+    mas registros (defensa contra arrays vacios en uno de los dos).
+    """
+    datos_ejecucion = _extraer_datos_ejecucion(session, obra_id)
+    time.sleep(_DELAY)
+    datos_preparacion = _extraer_datos_preparacion(session, obra_id)
+
+    merged = dict(datos_ejecucion)
+    for var_name, lista in datos_preparacion.items():
+        existente = merged.get(var_name, [])
+        if len(lista) > len(existente):
+            merged[var_name] = lista
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Procesamiento de datos crudos → modelos
 # ---------------------------------------------------------------------------
@@ -747,9 +798,13 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
 
         time.sleep(_DELAY)
 
-        # [5] Datos de ejecución
-        logger.info("InfoObras: descargando DatosEjecucion para ObraId %s", obra_id)
-        datos = _extraer_datos_ejecucion(session, obra_id)
+        # [5+4] Datos de ejecución + Datos de preparación.
+        # Mergeamos ambos endpoints: ejecucion trae lAvances (+ otras en
+        # plantilla vieja); preparacion trae lSupervisor, lResidente,
+        # lPersonal, lRevisionET (criticos para obras nuevas tipo PRONIS
+        # donde DatosEjecucion solo expone lAvances).
+        logger.info("InfoObras: descargando DatosEjecucion+Preparacion ObraId %s", obra_id)
+        datos = _extraer_todos_los_datos(session, obra_id)
 
         # Procesar datos
         supervisores = _procesar_supervisores(datos.get("lSupervisor", []))
@@ -1272,7 +1327,7 @@ def buscar_obra_por_certificado(
         try:
             session = _crear_session()
             time.sleep(_DELAY)
-            datos = _extraer_datos_ejecucion(session, mejor.obra_id)
+            datos = _extraer_todos_los_datos(session, mejor.obra_id)
             supervisores = _procesar_supervisores(datos.get("lSupervisor", []))
             residentes = _procesar_residentes(datos.get("lResidente", []))
             avances = _procesar_avances(datos.get("lAvances", []))
