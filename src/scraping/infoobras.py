@@ -35,8 +35,11 @@ HEADERS = {
     "Referer": f"{BASE_WEB}/Mapa/Index",
 }
 
-# Regex para extraer arrays JS embebidos en el HTML de DatosEjecucion
-_JS_VAR_RE = re.compile(r"var\s+(\w+)\s*=\s*(\[.*?\])\s*;", re.DOTALL)
+# Regex para localizar el INICIO de cada declaracion `var lXxx = ...`.
+# El JSON real (que puede contener arrays anidados, comillas, etc.) se parsea
+# despues con json.JSONDecoder.raw_decode para no depender de regex no-greedy.
+_JS_VAR_START_RE = re.compile(r"var\s+(l[A-Z]\w*)\s*=\s*", re.MULTILINE)
+_JSON_DECODER = json.JSONDecoder()
 
 # Meses en español → número
 _MES_NUM = {
@@ -89,6 +92,13 @@ class AvanceMensual:
     fecha_paralizacion: Optional[date]
     dias_paralizado: int
     causal: Optional[str]
+    # Campos financieros del cronograma (todos opcionales — no siempre vienen)
+    avance_fisico_programado: Optional[float] = None  # %
+    avance_fisico_real: Optional[float] = None        # %
+    valorizado_programado: Optional[float] = None     # S/.
+    valorizado_real: Optional[float] = None           # S/.
+    pct_ejecucion_financiera: Optional[float] = None  # %
+    monto_ejecucion_financiera: Optional[float] = None  # S/.
 
 
 @dataclass
@@ -118,6 +128,65 @@ class EntregaTerrenoInfo:
     """Registro de entrega de terreno."""
     fecha_entrega: Optional[date]
     porcentaje: Optional[float]
+    tipo_entrega: Optional[str] = None     # "Total" / "Parcial"
+
+
+@dataclass
+class AdendaInfo:
+    """Adenda al contrato (modificacion contractual formal)."""
+    numero: Optional[str]
+    fecha: Optional[date]
+    descripcion: Optional[str] = None
+
+
+@dataclass
+class TransferenciaFinancieraInfo:
+    """Transferencia financiera recibida por la entidad ejecutora."""
+    ambito: Optional[str]
+    entidad_origen: Optional[str]
+    monto: Optional[float]
+    documento: Optional[str] = None
+
+
+@dataclass
+class AdelantoInfo:
+    """Garantia de adelanto (directo, materiales, etc.)."""
+    tipo: Optional[str]                    # "Directo" / "Materiales" / etc.
+    monto: Optional[float]
+    fecha_entrega: Optional[date]
+    documento_aprobacion: Optional[str] = None
+
+
+@dataclass
+class CronogramaInfo:
+    """Cronograma vigente o actualizacion del cronograma."""
+    tipo: Optional[str]                    # "Original" / "Actualizado" / "Reformulado"
+    fecha_aprobacion: Optional[date]
+    documento: Optional[str] = None
+    nueva_fecha_termino: Optional[date] = None
+
+
+@dataclass
+class AdicionalDeductivoInfo:
+    """Adicional, deductivo o reduccion al contrato."""
+    numero: Optional[str]
+    tipo: Optional[str]                    # "Adicional" / "Deductivo" / "Reduccion"
+    subtipo: Optional[str]                 # subcategoria si existe
+    causal: Optional[str]
+    fecha_aprobacion: Optional[date]
+    porcentaje: Optional[float]
+    monto: Optional[float]
+    documento: Optional[str] = None
+
+
+@dataclass
+class ControversiaInfo:
+    """Controversia o proceso de solucion de controversias."""
+    mecanismo: Optional[str]               # "Arbitraje" / "Junta de Resolucion" / etc.
+    estado: Optional[str]
+    fecha_inicio: Optional[date]
+    fecha_fin: Optional[date]
+    documento: Optional[str] = None
 
 
 @dataclass
@@ -135,6 +204,11 @@ class WorkInfo:
     fecha_inicio: Optional[date] = None
     fecha_fin: Optional[date] = None
     plazo_dias: Optional[int] = None
+    # Campos de cabecera adicionales
+    codigo_infobras: Optional[str] = None              # ej: "169628"
+    porcentaje_avance_fisico: Optional[float] = None   # del ultimo avance real
+    monto_ejecutado_acumulado: Optional[float] = None  # S/. acumulado
+    # Colecciones existentes
     supervisores: list[SupervisorInfo] = field(default_factory=list)
     residentes: list[ResidenteInfo] = field(default_factory=list)
     avances: list[AvanceMensual] = field(default_factory=list)
@@ -142,6 +216,13 @@ class WorkInfo:
     modificaciones_plazo: list[ModificacionPlazoInfo] = field(default_factory=list)
     entregas_terreno: list[EntregaTerrenoInfo] = field(default_factory=list)
     suspension_periods: list[tuple[date, date]] = field(default_factory=list)
+    # Colecciones nuevas (refinacion 2026-04)
+    adendas: list[AdendaInfo] = field(default_factory=list)
+    transferencias: list[TransferenciaFinancieraInfo] = field(default_factory=list)
+    adelantos: list[AdelantoInfo] = field(default_factory=list)
+    cronogramas: list[CronogramaInfo] = field(default_factory=list)
+    adicionales_deductivos: list[AdicionalDeductivoInfo] = field(default_factory=list)
+    controversias: list[ControversiaInfo] = field(default_factory=list)
     raw_busqueda: dict = field(default_factory=dict)
 
 
@@ -214,6 +295,47 @@ def _buscar_por_cui(session: requests.Session, cui: str) -> list[dict]:
     return []
 
 
+def _parse_js_vars(html: str) -> dict[str, list]:
+    """
+    Parsea TODAS las declaraciones `var lXxx = [...];` del HTML.
+
+    Usa json.JSONDecoder.raw_decode para soportar correctamente arrays
+    con sub-arrays anidados (ej: `lSupervisor = [{Documentos: [...]}]`),
+    cosa que un regex no-greedy no maneja bien.
+
+    Retorna {nombre_variable: lista_de_dicts}.
+    Variables `null` o no-arrays se omiten silenciosamente.
+    """
+    variables: dict[str, list] = {}
+    for match in _JS_VAR_START_RE.finditer(html):
+        nombre = match.group(1)
+        pos = match.end()
+        # Saltar whitespace antes del valor
+        while pos < len(html) and html[pos] in " \t\r\n":
+            pos += 1
+        if pos >= len(html):
+            continue
+        ch = html[pos]
+        if ch == "n":
+            # Probablemente `null` — variable vacia
+            if html[pos:pos + 4] == "null":
+                variables[nombre] = []
+            continue
+        if ch != "[" and ch != "{":
+            continue
+        try:
+            obj, _ = _JSON_DECODER.raw_decode(html, pos)
+        except json.JSONDecodeError:
+            logger.warning("InfoObras: no se pudo parsear var %s en pos %d", nombre, pos)
+            continue
+        if isinstance(obj, list):
+            variables[nombre] = obj
+        elif isinstance(obj, dict):
+            # Algunas variables podrian ser objetos sueltos — los envolvemos
+            variables[nombre] = [obj]
+    return variables
+
+
 def _extraer_datos_ejecucion(session: requests.Session, obra_id: int) -> dict[str, list]:
     """
     Descarga DatosEjecucion y extrae las variables JS embebidas.
@@ -224,17 +346,7 @@ def _extraer_datos_ejecucion(session: requests.Session, obra_id: int) -> dict[st
     r = session.get(url, params={"ObraId": obra_id}, timeout=30)
     session.headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
     r.raise_for_status()
-
-    variables: dict[str, list] = {}
-    for match in _JS_VAR_RE.finditer(r.text):
-        nombre = match.group(1)
-        try:
-            datos = json.loads(match.group(2))
-            variables[nombre] = datos
-        except json.JSONDecodeError:
-            logger.warning("InfoObras: no se pudo parsear var %s", nombre)
-
-    return variables
+    return _parse_js_vars(r.text)
 
 
 # ---------------------------------------------------------------------------
@@ -274,11 +386,24 @@ def _procesar_residentes(raw_list: list[dict]) -> list[ResidenteInfo]:
     return residentes
 
 
+def _to_float(v) -> Optional[float]:
+    """Convierte a float aceptando None, '', strings con coma, etc."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
 def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
     """Convierte la lista cruda de lAvances a AvanceMensual."""
     avances = []
     for r in raw_list:
-        anio_str = r.get("Anio", "0")
+        anio_raw = r.get("Anio", "0")
+        anio_str = str(anio_raw)
         mes_str = (r.get("Mes") or "").upper().strip()
         anio = int(anio_str) if anio_str.isdigit() else 0
         mes = _MES_NUM.get(mes_str, 0)
@@ -291,6 +416,24 @@ def _procesar_avances(raw_list: list[dict]) -> list[AvanceMensual]:
             fecha_paralizacion=_parse_fecha_ddmmyyyy(r.get("FechaParalizacion")),
             dias_paralizado=int(r.get("DiasParalizado", 0) or 0),
             causal=r.get("Causal"),
+            avance_fisico_programado=_to_float(
+                r.get("AvanceFisicoProgramado") or r.get("AvProg") or r.get("PctAvFisicoProg")
+            ),
+            avance_fisico_real=_to_float(
+                r.get("AvanceFisicoReal") or r.get("AvReal") or r.get("PctAvFisicoReal")
+            ),
+            valorizado_programado=_to_float(
+                r.get("ValorizadoProgramado") or r.get("MontoProg") or r.get("ValProgramado")
+            ),
+            valorizado_real=_to_float(
+                r.get("ValorizadoReal") or r.get("MontoReal") or r.get("ValReal")
+            ),
+            pct_ejecucion_financiera=_to_float(
+                r.get("PorcentajeEjecucionFinanciera") or r.get("PctEjeFinanciera")
+            ),
+            monto_ejecucion_financiera=_to_float(
+                r.get("MontoEjecucionFinanciera") or r.get("MontoEjeFinanciera")
+            ),
         ))
     return avances
 
@@ -329,17 +472,140 @@ def _procesar_entregas_terreno(raw_list: list[dict]) -> list[EntregaTerrenoInfo]
     """Convierte la lista cruda de lEntregaTerreno a EntregaTerrenoInfo."""
     entregas = []
     for r in raw_list:
-        porcentaje = r.get("Porcentaje")
-        if porcentaje is not None:
-            try:
-                porcentaje = float(porcentaje)
-            except (ValueError, TypeError):
-                porcentaje = None
         entregas.append(EntregaTerrenoInfo(
             fecha_entrega=_parse_fecha_ddmmyyyy(r.get("FechaEntrega")),
-            porcentaje=porcentaje,
+            porcentaje=_to_float(r.get("Porcentaje")),
+            tipo_entrega=r.get("TipoEntrega") or r.get("Tipo"),
         ))
     return entregas
+
+
+def _procesar_adendas(raw_list: list[dict]) -> list[AdendaInfo]:
+    """Convierte la lista cruda de lAdenda a AdendaInfo."""
+    adendas = []
+    for r in raw_list:
+        adendas.append(AdendaInfo(
+            numero=str(r.get("NumeroAdenda") or r.get("Numero") or "").strip() or None,
+            fecha=_parse_fecha_ddmmyyyy(r.get("FechaAdenda") or r.get("Fecha")),
+            descripcion=r.get("Descripcion") or r.get("Detalle"),
+        ))
+    return adendas
+
+
+def _procesar_transferencias(raw_list: list[dict]) -> list[TransferenciaFinancieraInfo]:
+    """Convierte la lista cruda de lTransferenciaFinanciera."""
+    transferencias = []
+    for r in raw_list:
+        transferencias.append(TransferenciaFinancieraInfo(
+            ambito=r.get("Ambito") or r.get("ambito"),
+            entidad_origen=(
+                r.get("EntidadOrigen") or r.get("UnidadEjecutora")
+                or r.get("NombreEntidad")
+            ),
+            monto=_to_float(r.get("MontoTransferencia") or r.get("Monto")),
+            documento=r.get("DocumentoTransferencia") or r.get("Documento"),
+        ))
+    return transferencias
+
+
+def _procesar_adelantos(raw_list: list[dict]) -> list[AdelantoInfo]:
+    """Convierte la lista cruda de lAdelanto a AdelantoInfo (garantias de adelanto)."""
+    adelantos = []
+    for r in raw_list:
+        adelantos.append(AdelantoInfo(
+            tipo=r.get("TipoGarantia") or r.get("TipoAdelanto") or r.get("Tipo"),
+            monto=_to_float(
+                r.get("MontoGarantia") or r.get("MontoAdelanto") or r.get("Monto")
+            ),
+            fecha_entrega=_parse_fecha_ddmmyyyy(
+                r.get("FechaEntrega") or r.get("FechaDesembolso")
+            ),
+            documento_aprobacion=(
+                r.get("DocumentoAprobacion") or r.get("Documento")
+            ),
+        ))
+    return adelantos
+
+
+def _procesar_cronogramas(raw_list: list[dict]) -> list[CronogramaInfo]:
+    """Convierte la lista cruda de lCronograma a CronogramaInfo."""
+    cronogramas = []
+    for r in raw_list:
+        cronogramas.append(CronogramaInfo(
+            tipo=r.get("TipoCronograma") or r.get("Tipo"),
+            fecha_aprobacion=_parse_fecha_ddmmyyyy(
+                r.get("FechaAprobacion") or r.get("FechaAprob")
+            ),
+            documento=r.get("DocumentoAprobacion") or r.get("Documento"),
+            nueva_fecha_termino=_parse_fecha_ddmmyyyy(
+                r.get("NuevaFechaTermino") or r.get("FechaTermino")
+            ),
+        ))
+    return cronogramas
+
+
+def _procesar_adicionales_deductivos(raw_list: list[dict]) -> list[AdicionalDeductivoInfo]:
+    """Convierte la lista cruda de lAdicionalDeduc."""
+    items = []
+    for r in raw_list:
+        items.append(AdicionalDeductivoInfo(
+            numero=str(
+                r.get("NumeroAdicional") or r.get("Numero") or ""
+            ).strip() or None,
+            tipo=r.get("Tipo") or r.get("TipoAdicional"),
+            subtipo=r.get("Subtipo") or r.get("SubTipo"),
+            causal=r.get("Causal"),
+            fecha_aprobacion=_parse_fecha_ddmmyyyy(
+                r.get("FechaAprobacion") or r.get("FechaAprob")
+            ),
+            porcentaje=_to_float(r.get("Porcentaje") or r.get("PctAprobado")),
+            monto=_to_float(r.get("MontoAprobado") or r.get("Monto")),
+            documento=r.get("DocumentoAprobacion") or r.get("Documento"),
+        ))
+    return items
+
+
+def _procesar_controversias(raw_list: list[dict]) -> list[ControversiaInfo]:
+    """Convierte la lista cruda de lControversia a ControversiaInfo."""
+    controversias = []
+    for r in raw_list:
+        controversias.append(ControversiaInfo(
+            mecanismo=(
+                r.get("MecanismoSolucion") or r.get("Mecanismo")
+                or r.get("TipoControversia")
+            ),
+            estado=r.get("Estado") or r.get("EstadoControversia"),
+            fecha_inicio=_parse_fecha_ddmmyyyy(
+                r.get("FechaInicio") or r.get("FechaInicioProceso")
+            ),
+            fecha_fin=_parse_fecha_ddmmyyyy(
+                r.get("FechaFin") or r.get("FechaFinProceso")
+            ),
+            documento=r.get("DocumentoSustento") or r.get("Documento"),
+        ))
+    return controversias
+
+
+def _derivar_avance_actual(
+    avances: list[AvanceMensual],
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Toma el avance mas reciente con datos fisicos/financieros y devuelve
+    (porcentaje_avance_fisico_real, monto_ejecutado_acumulado).
+
+    Asume que la lista viene ordenada de mas reciente a mas antiguo
+    (que es como InfoObras la entrega).
+    """
+    pct = None
+    monto = None
+    for av in avances:
+        if pct is None and av.avance_fisico_real is not None:
+            pct = av.avance_fisico_real
+        if monto is None and av.monto_ejecucion_financiera is not None:
+            monto = av.monto_ejecucion_financiera
+        if pct is not None and monto is not None:
+            break
+    return pct, monto
 
 
 def _extraer_periodos_suspension(avances: list[AvanceMensual]) -> list[tuple[date, date]]:
@@ -442,14 +708,26 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
         contratistas = _procesar_contratistas(datos.get("lContratista", []))
         modificaciones_plazo = _procesar_modificaciones_plazo(datos.get("lModificacionPlazo", []))
         entregas_terreno = _procesar_entregas_terreno(datos.get("lEntregaTerreno", []))
+        adendas = _procesar_adendas(datos.get("lAdenda", []))
+        transferencias = _procesar_transferencias(datos.get("lTransferenciaFinanciera", []))
+        adelantos = _procesar_adelantos(datos.get("lAdelanto", []))
+        cronogramas = _procesar_cronogramas(datos.get("lCronograma", []))
+        adicionales_deductivos = _procesar_adicionales_deductivos(datos.get("lAdicionalDeduc", []))
+        controversias = _procesar_controversias(datos.get("lControversia", []))
         suspension_periods = _extraer_periodos_suspension(avances)
 
+        # Cabecera derivada del avance mas reciente con avance fisico real
+        avance_pct_real, monto_ejecutado = _derivar_avance_actual(avances)
+
         logger.info(
-            "InfoObras: ObraId %s — %d avances, %d supervisores, %d residentes, "
-            "%d contratistas, %d mod. plazo, %d entregas terreno, %d periodos suspensión",
-            obra_id, len(avances), len(supervisores), len(residentes),
-            len(contratistas), len(modificaciones_plazo), len(entregas_terreno),
-            len(suspension_periods),
+            "InfoObras: ObraId %s — %d avances (%.2f%% real), %d sup, %d res, "
+            "%d cont, %d modPlazo, %d terreno, %d adendas, %d transf, "
+            "%d adelantos, %d cron, %d adic/deduc, %d contr, %d susp",
+            obra_id, len(avances), avance_pct_real or 0.0,
+            len(supervisores), len(residentes), len(contratistas),
+            len(modificaciones_plazo), len(entregas_terreno), len(adendas),
+            len(transferencias), len(adelantos), len(cronogramas),
+            len(adicionales_deductivos), len(controversias), len(suspension_periods),
         )
 
         return WorkInfo(
@@ -465,6 +743,14 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
             fecha_inicio=_parse_timestamp_json(obra_raw.get("fechaIniObra")),
             fecha_fin=_parse_timestamp_json(obra_raw.get("fechaFinObra")),
             plazo_dias=obra_raw.get("plazoObra"),
+            codigo_infobras=str(
+                obra_raw.get("codigoInfobras")
+                or obra_raw.get("codInfobras")
+                or obra_raw.get("CodigoInfobras")
+                or ""
+            ).strip() or None,
+            porcentaje_avance_fisico=avance_pct_real,
+            monto_ejecutado_acumulado=monto_ejecutado,
             supervisores=supervisores,
             residentes=residentes,
             avances=avances,
@@ -472,6 +758,12 @@ def fetch_by_cui(cui: str) -> Optional[WorkInfo]:
             modificaciones_plazo=modificaciones_plazo,
             entregas_terreno=entregas_terreno,
             suspension_periods=suspension_periods,
+            adendas=adendas,
+            transferencias=transferencias,
+            adelantos=adelantos,
+            cronogramas=cronogramas,
+            adicionales_deductivos=adicionales_deductivos,
+            controversias=controversias,
             raw_busqueda=obra_raw,
         )
 
@@ -927,7 +1219,14 @@ def buscar_obra_por_certificado(
             contratistas = _procesar_contratistas(datos.get("lContratista", []))
             modificaciones_plazo = _procesar_modificaciones_plazo(datos.get("lModificacionPlazo", []))
             entregas_terreno = _procesar_entregas_terreno(datos.get("lEntregaTerreno", []))
+            adendas = _procesar_adendas(datos.get("lAdenda", []))
+            transferencias = _procesar_transferencias(datos.get("lTransferenciaFinanciera", []))
+            adelantos = _procesar_adelantos(datos.get("lAdelanto", []))
+            cronogramas = _procesar_cronogramas(datos.get("lCronograma", []))
+            adicionales_deductivos = _procesar_adicionales_deductivos(datos.get("lAdicionalDeduc", []))
+            controversias = _procesar_controversias(datos.get("lControversia", []))
             suspension_periods = _extraer_periodos_suspension(avances)
+            avance_pct_real, monto_ejecutado = _derivar_avance_actual(avances)
 
             return WorkInfo(
                 cui=mejor.cui or "",
@@ -936,6 +1235,8 @@ def buscar_obra_por_certificado(
                 estado=mejor.estado,
                 entidad=mejor.entidad,
                 fecha_inicio=mejor.fecha_inicio,
+                porcentaje_avance_fisico=avance_pct_real,
+                monto_ejecutado_acumulado=monto_ejecutado,
                 supervisores=supervisores,
                 residentes=residentes,
                 avances=avances,
@@ -943,6 +1244,12 @@ def buscar_obra_por_certificado(
                 modificaciones_plazo=modificaciones_plazo,
                 entregas_terreno=entregas_terreno,
                 suspension_periods=suspension_periods,
+                adendas=adendas,
+                transferencias=transferencias,
+                adelantos=adelantos,
+                cronogramas=cronogramas,
+                adicionales_deductivos=adicionales_deductivos,
+                controversias=controversias,
                 raw_busqueda=mejor.obra_raw,
             )
         except Exception as e:

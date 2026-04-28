@@ -1833,6 +1833,11 @@ async def search_infoobras(
     }
 
 
+def _iso(d):
+    """Helper: serializa fecha a ISO string o None."""
+    return d.isoformat() if d else None
+
+
 @app.get("/api/infoobras/obra/{cui}", tags=["InfoObras"])
 async def get_obra_infoobras(cui: str):
     """Obtiene datos completos de una obra por CUI."""
@@ -1843,33 +1848,157 @@ async def get_obra_infoobras(cui: str):
         raise HTTPException(404, f"Obra con CUI {cui} no encontrada en InfoObras")
 
     return {
+        # Cabecera
         "cui": obra.cui,
         "obra_id": obra.obra_id,
+        "codigo_infobras": obra.codigo_infobras,
         "nombre": obra.nombre,
         "estado": obra.estado,
         "tipo_obra": obra.tipo_obra,
         "entidad": obra.entidad,
         "ejecutor": obra.ejecutor,
-        "fecha_inicio": obra.fecha_inicio.isoformat() if obra.fecha_inicio else None,
-        "fecha_fin": obra.fecha_fin.isoformat() if obra.fecha_fin else None,
+        "ruc_ejecutor": obra.ruc_ejecutor,
+        "monto_contrato": obra.monto_contrato,
+        "fecha_inicio": _iso(obra.fecha_inicio),
+        "fecha_fin": _iso(obra.fecha_fin),
         "plazo_dias": obra.plazo_dias,
+        "porcentaje_avance_fisico": obra.porcentaje_avance_fisico,
+        "monto_ejecutado_acumulado": obra.monto_ejecutado_acumulado,
+        # Personal
         "supervisores": [
             {
                 "nombre": f"{s.nombre} {s.apellido_paterno} {s.apellido_materno or ''}".strip(),
                 "tipo": s.tipo,
-                "fecha_inicio": s.fecha_inicio.isoformat() if s.fecha_inicio else None,
-                "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
+                "tipo_persona": s.tipo_persona,
+                "empresa": s.empresa,
+                "ruc": s.ruc,
+                "dni": s.dni,
+                "fecha_inicio": _iso(s.fecha_inicio),
+                "fecha_fin": _iso(s.fecha_fin),
             }
             for s in obra.supervisores
         ],
         "residentes": [
             {
                 "nombre": f"{r.nombre} {r.apellido_paterno} {r.apellido_materno or ''}".strip(),
-                "fecha_inicio": r.fecha_inicio.isoformat() if r.fecha_inicio else None,
-                "fecha_fin": r.fecha_fin.isoformat() if r.fecha_fin else None,
+                "fecha_inicio": _iso(r.fecha_inicio),
+                "fecha_fin": _iso(r.fecha_fin),
             }
             for r in obra.residentes
         ],
+        # Contratacion
+        "contratistas": [
+            {
+                "tipo_empresa": c.tipo_empresa,
+                "ruc": c.ruc,
+                "nombre_empresa": c.nombre_empresa,
+                "monto_soles": c.monto_soles,
+                "numero_contrato": c.numero_contrato,
+                "fecha_contrato": _iso(c.fecha_contrato),
+                "fecha_fin_contrato": _iso(c.fecha_fin_contrato),
+            }
+            for c in obra.contratistas
+        ],
+        "adendas": [
+            {
+                "numero": a.numero,
+                "fecha": _iso(a.fecha),
+                "descripcion": a.descripcion,
+            }
+            for a in obra.adendas
+        ],
+        # Cronograma y plazos
+        "cronogramas": [
+            {
+                "tipo": cr.tipo,
+                "fecha_aprobacion": _iso(cr.fecha_aprobacion),
+                "documento": cr.documento,
+                "nueva_fecha_termino": _iso(cr.nueva_fecha_termino),
+            }
+            for cr in obra.cronogramas
+        ],
+        "modificaciones_plazo": [
+            {
+                "tipo": mp.tipo,
+                "causal": mp.causal,
+                "dias_aprobados": mp.dias_aprobados,
+                "fecha_aprobacion": _iso(mp.fecha_aprobacion),
+                "fecha_fin": _iso(mp.fecha_fin),
+            }
+            for mp in obra.modificaciones_plazo
+        ],
+        # Inicio de obra
+        "entregas_terreno": [
+            {
+                "tipo_entrega": e.tipo_entrega,
+                "fecha_entrega": _iso(e.fecha_entrega),
+                "porcentaje": e.porcentaje,
+            }
+            for e in obra.entregas_terreno
+        ],
+        "transferencias": [
+            {
+                "ambito": t.ambito,
+                "entidad_origen": t.entidad_origen,
+                "monto": t.monto,
+                "documento": t.documento,
+            }
+            for t in obra.transferencias
+        ],
+        "adelantos": [
+            {
+                "tipo": ad.tipo,
+                "monto": ad.monto,
+                "fecha_entrega": _iso(ad.fecha_entrega),
+                "documento_aprobacion": ad.documento_aprobacion,
+            }
+            for ad in obra.adelantos
+        ],
+        # Modificaciones contractuales
+        "adicionales_deductivos": [
+            {
+                "numero": adi.numero,
+                "tipo": adi.tipo,
+                "subtipo": adi.subtipo,
+                "causal": adi.causal,
+                "fecha_aprobacion": _iso(adi.fecha_aprobacion),
+                "porcentaje": adi.porcentaje,
+                "monto": adi.monto,
+                "documento": adi.documento,
+            }
+            for adi in obra.adicionales_deductivos
+        ],
+        "controversias": [
+            {
+                "mecanismo": ct.mecanismo,
+                "estado": ct.estado,
+                "fecha_inicio": _iso(ct.fecha_inicio),
+                "fecha_fin": _iso(ct.fecha_fin),
+                "documento": ct.documento,
+            }
+            for ct in obra.controversias
+        ],
+        # Avances mensuales (detalle financiero) — el panel puede mostrar
+        # tabla completa o solo el resumen
+        "avances": [
+            {
+                "anio": av.anio,
+                "mes": av.mes,
+                "estado": av.estado,
+                "tipo_paralizacion": av.tipo_paralizacion,
+                "fecha_paralizacion": _iso(av.fecha_paralizacion),
+                "dias_paralizado": av.dias_paralizado,
+                "causal": av.causal,
+                "avance_fisico_programado": av.avance_fisico_programado,
+                "avance_fisico_real": av.avance_fisico_real,
+                "valorizado_programado": av.valorizado_programado,
+                "valorizado_real": av.valorizado_real,
+                "pct_ejecucion_financiera": av.pct_ejecucion_financiera,
+                "monto_ejecucion_financiera": av.monto_ejecucion_financiera,
+            }
+            for av in obra.avances
+        ],
+        # Resumen / agregados (compatibilidad con UI actual)
         "paralizaciones": len(obra.suspension_periods),
         "suspension_periods": [
             {"inicio": p[0].isoformat(), "fin": p[1].isoformat()}
