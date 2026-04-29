@@ -4,8 +4,9 @@ Documento del procedimiento para probar Gemma 4 26B como reemplazo de
 Qwen 2.5 14B + Qwen-VL 7B en el pipeline.
 
 > **Branch**: `gemma-branch`
+> **Estado**: ❌ **EXPERIMENTO CERRADO** — Gemma 4 NO viable en hardware actual
+>            (ver sección "Resultado del experimento" al final).
 > **Riesgo**: bajo — todo el cambio es config, código retro-compatible.
-> **Tiempo de prueba**: 30-60 min para validar baseline vs Gemma.
 
 ## Por qué probar Gemma 4
 
@@ -246,3 +247,94 @@ y visión), ese swap es innecesario y se puede simplificar más adelante.
    suficiente (10pts MMMLU menos pero 2x VRAM libre)
 5. Reescribir prompts para usar `role="system"` separado (Gemma 4 lo soporta
    nativo y produce respuestas más limpias)
+
+## Resultado del experimento (2026-04-28)
+
+**Veredicto: ❌ Gemma 4 NO viable en Quadro RTX 5000 16 GB.**
+
+### Lo que probamos
+
+1. **gemma4:26b + num_ctx=32768**
+   - VRAM: 15919 / 16384 MiB ocupado solo cargando el modelo (97%)
+   - Al llegar request → spillover a CPU/RAM (`prefill 8 tok/s`)
+   - Bloque rtm_postor: 251s. rtm_personal: timeout >5 min sin respuesta
+   - Inutilizable.
+
+2. **gemma4:26b + num_ctx=12288** (intento de bajar el contexto)
+   - Mismo VRAM apretado. Mismo spillover.
+   - No mejora.
+
+3. **gemma4:e4b + num_ctx=32178** (modelo más chico, debería caber holgado)
+   - VRAM: ~10 GB ocupado, deja margen para context.
+   - **Pero**: Ollama NO expande el num_ctx desde su default de 4096 cuando
+     llega un request con `options.num_ctx=32178`. Truncó silenciosamente:
+
+     | Bloque | Prompt enviado | Tokens procesados |
+     |--------|----------------|-------------------|
+     | rtm_postor | ~2440 tok | 2024 (cabe) |
+     | rtm_personal | ~10850 tok | **4096 (truncado 60%)** |
+     | retry | ~14434 tok | **4096 (truncado 70%)** |
+     | factores | ~3811 tok | 3168 (cabe) |
+
+   - Con prompts truncados, Gemma e4b **alucina con confianza**:
+     - rtm_personal devolvió cargos inventados ("Estructuras", "Instalaciones
+       Hidrosanitarias") con descripciones genéricas tipo manual ("RETIE",
+       "sistemas fotovoltaicos"), nada del TDR real.
+     - factores_evaluacion devolvió tabla markdown con factores y puntajes
+       inventados ("Cumplimiento Legal: 15 puntos") que **no existen en el TDR**.
+   - Resultado final del job: 1 postor + **0 cargos** + **0 factores**.
+   - Inutilizable para producción.
+
+### Lecciones aprendidas
+
+1. **Hardware**: 16 GB de VRAM no alcanza para Gemma 4 26B con context útil.
+   Para usar 26B en este pipeline haría falta GPU con ≥24 GB.
+
+2. **Ollama y num_ctx**: Ollama no siempre expande el contexto en runtime
+   aunque le pases `options.num_ctx` por request. Si el modelo se cargó
+   con su default, el request se trunca. Solución parcial: definir
+   `OLLAMA_NUM_CTX` global en el daemon de Ollama, o crear un Modelfile
+   custom (ej: `qwen2.5-14b-16k`) con el num_ctx baked in.
+
+3. **Gemma 4 e4b**: aunque MMMLU multilingüe es 76.6%, su comportamiento
+   con prompts truncados es **alucinar en vez de pedir más contexto**.
+   Eso lo hace inseguro para extracción estructurada compleja: prefiero
+   un modelo que diga "no encontré nada" a uno que invente datos plausibles.
+
+4. **Qwen 2.5 14B sigue siendo el mejor compromiso disponible** en este
+   hardware (16 GB). Hasta upgrade de GPU o aparición de modelo
+   intermedio (~12-15B) específicamente entrenado para extracción JSON,
+   el path es Qwen 14B + iteraciones de prompt.
+
+### Cambios que SÍ vale la pena cherry-pickear a main desde gemma-branch
+
+Aunque el modelo no funcionó, hay infraestructura útil que conviene salvar:
+
+- **Filtros defensivos de markdown y thinking blocks** en `_limpiar_respuesta`
+  (llm.py) y `_limpiar_bloque_markdown` (vl_extractor.py) — útiles incluso
+  con Qwen si en algún momento un prompt hace que devuelva texto extra.
+- **Variables de sampling parametrizadas** (`QWEN_TEMPERATURE`, `TOP_P`,
+  `TOP_K`, `KEEP_ALIVE`) en settings.py + `_build_extra_body()` helper en
+  llm.py — permite tunear sin tocar código.
+- **`format=json` en extra_body** (`_build_extra_body()`) — fuerza JSON
+  output en Ollama, útil con cualquier modelo.
+- **Banner ampliado** en main.py mostrando sampling efectivo.
+- **Fix `delete_job`** en main.py manejando PermissionError de Windows
+  cuando el log handler aún tiene el archivo abierto.
+
+Cherry-pick selectivo recomendado:
+```bash
+git checkout main
+git cherry-pick <commit-hashes>
+```
+
+### Cuándo retomar
+
+Reabrir este experimento si:
+- Hay upgrade de GPU a ≥24 GB VRAM.
+- Sale variante intermedia de Gemma 4 (~12-15B).
+- Aparece otro modelo open-source competitivo entrenado específicamente
+  para extracción JSON estructurada (ej: deepseek-coder-v3, phi-5, etc.).
+- Ollama mejora el manejo de num_ctx dinámico.
+
+Hasta entonces: Qwen 2.5 14B + iteraciones de prompt sigue siendo el path.
