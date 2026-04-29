@@ -73,14 +73,25 @@ Cualquier prompt engineering ataca síntomas, no la causa.
   está físicamente delimitada en el archivo. El LLM nunca ve más de una
   celda B.2 a la vez (cuando se necesita parseo verboso).
 
-- **Capa 2** — PP-Structure detecta regiones de tabla con un modelo
-  específico de layout. Devuelve coordenadas de celdas que se mapean a
-  matriz [filas][columnas]. Mismo principio que Capa 1.
+- **Capa 2** — PP-Structure V3 (PaddleOCR) detecta regiones de tabla con
+  un modelo específico de layout y devuelve HTML estructurado por tabla.
+  Un parser HTML (con soporte para `colspan`/`rowspan`) lo convierte a
+  matriz `[filas][columnas]`. Mismo principio que Capa 1: el LLM nunca
+  ve más de una celda B.2 a la vez. Implementado vía subprocess al
+  motor-OCR (mode `table_extract`, rama `feat/table-extract-pp-structure`).
 
-- **Capa 3** (fallback robusto) — El catálogo de cargos OSCE actúa de
-  ancla. `rapidfuzz` busca dónde empieza cada cargo en el texto OCR
-  (umbral 85). Cada fila se segmenta entre dos anclas. El LLM recibe
-  el chunk de UNA fila — literalmente no puede contaminar.
+- **Capa 3** (fallback robusto) — El catálogo de cargos OSCE (~70 cargos)
+  actúa de ancla. `rapidfuzz` busca dónde empieza cada cargo en el texto
+  OCR (umbral 85). Si el catálogo encuentra menos de la mitad de los
+  esperados, hay un **fallback secundario** por número de fila (`"1.",
+  "01)", "N° 1"`). Cada fila se segmenta entre dos anclas. El LLM recibe
+  el chunk de UNA fila — literalmente no puede contaminar. Las 17
+  llamadas LLM corren en paralelo (default 4 workers) con `keep_alive=10m`
+  del modelo Qwen. Pre-warm de la primera llamada serial para que el
+  modelo cargue una sola vez en GPU. Después, validación post-LLM:
+  profesiones que en realidad son cargos se mueven al campo correcto;
+  cargos que son títulos puros (sin "Especialista"/"Jefe"/etc.) se
+  descartan.
 
 ### Aceptación de capa
 
@@ -116,6 +127,26 @@ src/tdr/extractor/pipeline.py
 
 .env.example
   + variable USE_3LAYER_EXTRACTION (default false)
+```
+
+### Cambios en motor-OCR (rama `feat/table-extract-pp-structure`)
+
+**Aditivos, no rompen nada existente.** Para usar Capa 2 en producción
+hay que pullear esta rama (o mergearla a main) en el servidor:
+
+```
+motor-OCR/src/engines/table_extract/
+  __init__.py            ← exposes extract_tables_from_pdf
+  pp_structure.py        ← singleton PPStructureV3 + parser HTML colspan/rowspan
+  pipeline.py            ← orquesta PDF -> imágenes -> PP-Structure -> matrices
+
+motor-OCR/subprocess_wrapper.py
+  + nuevo mode 'table_extract' (sólo disposition; los modes existentes
+    ocr_only / segmentation / pdfplumber_segmentation no se tocan)
+
+motor-OCR/CLAUDE.md
+  + entrada del mode 'table_extract' en la tabla de modes
+  + documentación del nuevo engine
 ```
 
 **Cero cambios destructivos.** Todo es aditivo y protegido por feature flag.
@@ -192,12 +223,14 @@ print(resultado.diagnostico)
 | Caso | Tiempo agregado |
 |------|-----------------|
 | PDF digital con bordes (Capa 1 acepta) | +30-60s |
-| Capa 1 falla, cae a Capa 3 | +2-3 min |
-| Capa 1 falla, Capa 3 procesa 17 filas | +4-5 min (17 llamadas LLM) |
+| PDF escaneado (Capa 2 — PP-Structure subprocess) | +60-120s |
+| Capa 1 y 2 fallan, cae a Capa 3 (paralelo, 4 workers) | +60-120s |
+| Capa 3 con 1 worker (legacy serial) | +3-5 min |
 
-La Capa 3 es paralelizable (cada fila es independiente). En esta primera
-iteración corre serial — si la latencia es bloqueante, se puede paralelizar
-con `concurrent.futures.ThreadPoolExecutor` sin tocar la lógica.
+Capa 3 corre las 17 llamadas LLM **en paralelo** con `ThreadPoolExecutor`
+(default 4 workers, configurable via `LAYER3_MAX_WORKERS`). La primera
+llamada va serial (pre-warm) para que el modelo Qwen cargue una sola vez
+en GPU. `keep_alive=10m` mantiene el modelo cargado entre llamadas.
 
 ## Métricas esperadas
 
@@ -216,17 +249,26 @@ PP-Structure se implemente en motor-OCR.
 
 ## Limitaciones conocidas
 
-- **Capa 2 placeholder**: `_esta_disponible_pp_structure()` retorna `False`
-  hasta que motor-OCR exponga el mode `table_extract`. Trabajo aditivo
-  futuro al motor-OCR (no rompe nada actual).
-- **Catálogo OSCE estático**: 33+ cargos canónicos hard-codeados en
+- **Capa 2 requiere motor-OCR actualizado**: la rama
+  `feat/table-extract-pp-structure` del repo motor-OCR debe estar
+  pulleada en el servidor (`D:\proyectos\motor-OCR`) para que el mode
+  `table_extract` esté disponible. Si está en `main` viejo, la Capa 2
+  detectará `mode=ocr_only`/segmentation y devolverá `[]` con motivo en
+  diagnóstico — el orchestrator cae a Capa 3 sin romper.
+- **Catálogo OSCE estático**: ~70 cargos canónicos hard-codeados en
   `layer3_regex_rows.py::CATALOGO_CARGOS_OSCE`. Si OSCE agrega cargos
   nuevos, hay que actualizar el catálogo (regla simple, fácil de mantener).
+  La Capa 3 ya tiene un **fallback por número de fila** que funciona
+  incluso si el catálogo no encuentra los cargos.
 - **n_filas_esperadas=17**: hard-coded en la integración del pipeline.
   Si el TDR tiene 12 cargos, el orchestrator marcará 12/17=71% como "no
   aceptable" y caerá a Capa 3. En la práctica la Capa 3 también devolverá
   12 filas — funciona, solo da un fallback innecesario. Mejora futura:
   detectar n_filas_esperadas leyendo "N° X" del PDF.
+- **Paralelismo Capa 3 vs VRAM**: el default de `LAYER3_MAX_WORKERS=4`
+  asume 16 GB VRAM con Qwen 14B Q4. Si hay OOM, bajar a 2. Si hay 24+ GB,
+  subir a 6-8. La primera llamada va serial (pre-warm) para evitar que
+  4 workers compitan por cargar el modelo.
 - **PDFs con bordes mal renderizados**: pdfplumber a veces detecta tablas
   fantasma o pierde columnas. La heurística de aceptación de la Capa 1
   filtra esos casos.
