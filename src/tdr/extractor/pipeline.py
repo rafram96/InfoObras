@@ -1382,7 +1382,50 @@ def extraer_bases(
     pages  = parse_full_text(full_text)
     scored = [score_page(p) for p in pages]
 
-    # ── Extraccion VL estructurada de B.1 y B.2 (opt-in) ──────────────────
+    # ── Extraccion 3-CAPAS estructurada de B.1 y B.2 (opt-in) ─────────────
+    # Si USE_3LAYER_EXTRACTION=true, ejecuta el pipeline de 3 capas que
+    # ataca cross-row contamination de raiz:
+    #   Capa 1: pdfplumber.extract_tables (PDFs digitales con bordes)
+    #   Capa 2: PP-Structure de PaddleOCR (escaneados; placeholder por ahora)
+    #   Capa 3: regex segmentacion + LLM por fila aislada (fallback robusto)
+    # El resultado se mergea con los items del pipeline textual al final.
+    extraccion_3capas = None
+    if pdf_path and os.getenv("USE_3LAYER_EXTRACTION", "false").lower() == "true":
+        try:
+            from src.tdr.extractor.table_extractor import extraer_tdr_3_capas
+            from src.tdr.tables.vl_page_detector import detectar_paginas_b1_b2
+            _scored_pre = [score_page(p) for p in pages]
+            _bloques_pre = group_into_blocks(_scored_pre)
+            paginas_rtm_3l = sorted({
+                p.page_num for b in _bloques_pre
+                if b.block_type == "rtm_personal"
+                for p in b.pages
+            })
+            texto_por_pagina_3l = {p.page_num: p.text for p in pages}
+            paginas_b1_3l, paginas_b2_3l = detectar_paginas_b1_b2(
+                texto_por_pagina_3l, paginas_rtm_3l,
+            )
+            logger.info(
+                "[pipeline] 3-LAYER habilitado: B.1=%s B.2=%s",
+                paginas_b1_3l, paginas_b2_3l,
+            )
+            extraccion_3capas = extraer_tdr_3_capas(
+                pdf_path=pdf_path,
+                texto_por_pagina=texto_por_pagina_3l,
+                paginas_b1=paginas_b1_3l,
+                paginas_b2=paginas_b2_3l,
+                n_filas_esperadas=17,
+            )
+            logger.info(
+                "[pipeline] 3-LAYER OK: capa=%s filas=%d intentadas=%s",
+                extraccion_3capas.capa_usada,
+                len(extraccion_3capas.filas),
+                extraccion_3capas.capas_intentadas,
+            )
+        except Exception as e:
+            logger.warning("[pipeline] 3-LAYER fallo: %s", e)
+
+    # ── Extraccion VL estructurada de B.1 y B.2 (opt-in legacy) ────────────
     # Si USE_VL_TDR_EXTRACTION=true en env, pide a Qwen-VL extraer las tablas
     # B.1 (profesiones) y B.2 (cargos similares) directamente como JSON.
     # Mergea al final con los items del pipeline textual. Ataca cross-fila,
@@ -1669,7 +1712,29 @@ def extraer_bases(
         resultado["rtm_personal"], full_text,
     )
 
-    # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa) ──
+    # ── Merge con datos del pipeline 3-CAPAS (si USE_3LAYER_EXTRACTION activo) ──
+    # Las filas del pipeline 3-capas son mas confiables porque eliminan
+    # cross-row contamination por construccion. Reemplazan profesiones,
+    # cargos_similares y tipo_obra del item textual.
+    if extraccion_3capas and extraccion_3capas.filas and resultado["rtm_personal"]:
+        try:
+            from src.tdr.extractor.table_extractor.orchestrator import (
+                mergear_con_pipeline_textual,
+            )
+            items_merged, diag_merge = mergear_con_pipeline_textual(
+                resultado["rtm_personal"], extraccion_3capas,
+            )
+            resultado["rtm_personal"] = items_merged
+            logger.info(
+                "[pipeline] Merge 3-LAYER: actualizados=%d, agregados=%d, solo_textuales=%d",
+                diag_merge.get("items_actualizados", 0),
+                diag_merge.get("items_agregados", 0),
+                diag_merge.get("items_solo_textuales", 0),
+            )
+        except Exception as e:
+            logger.warning("[pipeline] Merge 3-LAYER fallo: %s", e)
+
+    # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa, legacy) ──
     # Los datos VL son mas confiables en layout de tabla (no sufre cross-fila)
     # por lo que REEMPLAZAMOS profesiones y cargos_similares con los del VL,
     # con fallback al textual si VL no tiene esa fila.
