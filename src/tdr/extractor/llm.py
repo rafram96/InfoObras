@@ -21,6 +21,10 @@ def _build_extra_body() -> dict:
     Arma extra_body para client.chat.completions.create() con todas las
     opciones especificas de Ollama. Toma valores de settings.py para que
     el .env controle todo (deterministico Qwen vs sampling Gemma 4).
+
+    `format: json` es CRITICO para Gemma 4: sin ese flag el modelo a veces
+    devuelve markdown con tablas en vez de JSON estructurado (visto en
+    bloque factores_evaluacion). Qwen 2.5 lo respetaba aun sin flag.
     """
     options: dict = {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX}
     if QWEN_TOP_P != 1.0:
@@ -28,6 +32,7 @@ def _build_extra_body() -> dict:
     if QWEN_TOP_K > 0:
         options["top_k"] = QWEN_TOP_K
     return {
+        "format": "json",
         "keep_alive": QWEN_KEEP_ALIVE,
         "options": options,
     }
