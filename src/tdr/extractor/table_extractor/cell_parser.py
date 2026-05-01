@@ -182,17 +182,36 @@ def parsear_tiempo_meses(texto_celda: str) -> Optional[int]:
 
 # ── Parser de B.2 verbosa con LLM mini-prompt ────────────────────────────────
 
-_PROMPT_PARSE_CELDA_B2 = """Eres parser de UNA celda de la columna "TRABAJOS O PRESTACIONES" de la tabla B.2 de un TDR OSCE peruano.
+_PROMPT_PARSE_CELDA_B2 = """Eres parser LITERAL de UNA celda de la columna "TRABAJOS O PRESTACIONES" de la tabla B.2 de un TDR OSCE peruano.
 
-INSTRUCCIONES:
-1. La celda contiene una lista de cargos similares separados por "y/o" + un sufijo con la especialidad.
-2. Extrae SOLO los cargos como lista de strings.
-3. Extrae el tipo de obra (especialidad/subespecialidad) si aparece.
-4. NO inventes cargos. Solo extrae lo que esta literal en el texto.
-5. Frases como "la combinacion de estos" NO son cargos — descartalas.
-6. "en la supervision y/o ejecucion de obras" NO es un cargo — es contexto, descartalo.
+REGLA CRITICA: Solo extrae palabras que estan LITERALMENTE en el texto entre "y/o". NO inventes, NO sugieras variantes, NO completes con sinonimos.
 
-EJEMPLO 1:
+ESTRUCTURA TIPICA DE LA CELDA:
+La celda puede tener UNA de estas dos formas:
+
+  FORMA A — Lista de cargos completos:
+    "[Cargo1] y/o [Cargo2] y/o [Cargo3] ... [y/o la combinacion de estos], en la supervision/ejecucion..."
+    Aqui cada [Cargo] ya es un puesto laboral completo.
+    -> cargos_similares = TODOS los [Cargo] literales, sin tocar.
+
+  FORMA B — Roles + areas separados por "en/de:":
+    "[Rol1] y/o [Rol2] y/o ... y/o [RolN] [o la combinacion] en/de: [Area1] y/o [Area2] y/o ..."
+    Aqui los [Rol] son cargos genericos (Ingeniero, Especialista, jefe, etc.)
+    y las [Area] son especialidades tecnicas (Medio Ambiente, Cableado Estructurado, etc.)
+    -> cargos_similares = SOLO los [Rol] que estan ANTES de "en/de:".
+    -> Las [Area] NO son cargos. NO las incluyas como cargos. NO las combines con los roles.
+
+REGLAS ESPECIFICAS:
+1. NO inventes cargos. Si la palabra NO aparece literal en el texto entre "y/o", NO la incluyas.
+2. NO crees variantes. Si el texto dice "Medio Ambiente", NO escribas "Mitigacion Ambiental" ni "Monitoreo Ambiental" ni "ambientalista".
+3. NO combines roles con areas. Si el texto dice "Ingeniero en/de: Medio Ambiente", NO devuelvas "Ingeniero Ambiental".
+4. Frases que NO son cargos (descartar):
+   - "la combinacion de estos" / "o la combinacion de las mismas"
+   - "en la supervision y/o ejecucion de obras"
+   - "en la especialidad ..." / "subespecialidad ..."
+5. Tipo de obra: extrae lo que viene despues de "subespecialidad" (ej: "establecimientos de salud").
+
+EJEMPLO 1 (Forma A — cargos completos):
 Texto: "Gerente de Obra y/o Gerente de Proyecto y/o Coordinador de Obra y/o Director de Proyectos y/o la combinacion de estos, en la supervision y/o ejecucion de obras en la especialidad 'edificaciones y afines' y la subespecialidad 'establecimientos de salud'."
 
 Respuesta:
@@ -201,7 +220,7 @@ Respuesta:
   "tipo_obra": "establecimientos de salud"
 }
 
-EJEMPLO 2:
+EJEMPLO 2 (Forma A — cargos completos con sufijo de especialidad):
 Texto: "Especialista en Instalaciones Sanitarias y/o Jefe en Instalaciones Sanitarias y/o Ingeniero Sanitario y/o Especialista Sanitario y/o Ingeniero en Instalaciones Sanitarias y/o la combinacion de estos, en la supervision y/o ejecucion de obras en la especialidad 'edificaciones y afines' y la subespecialidad 'establecimientos de salud'."
 
 Respuesta:
@@ -209,6 +228,32 @@ Respuesta:
   "cargos_similares": ["Especialista en Instalaciones Sanitarias", "Jefe en Instalaciones Sanitarias", "Ingeniero Sanitario", "Especialista Sanitario", "Ingeniero en Instalaciones Sanitarias"],
   "tipo_obra": "establecimientos de salud"
 }
+
+EJEMPLO 3 (Forma B — roles + areas con "en/de:"):
+Texto: "Ingeniero y/o Especialista y/o supervisor y/o jefe y/o Responsable y/o Coordinador en/de: Medio Ambiente y/o la combinacion de estos, en la supervision y/o ejecucion de obras en la especialidad 'edificaciones y afines' y la subespecialidad 'establecimientos de salud'."
+
+Respuesta CORRECTA (solo los roles antes de "en/de:"):
+{
+  "cargos_similares": ["Ingeniero", "Especialista", "supervisor", "jefe", "Responsable", "Coordinador"],
+  "tipo_obra": "establecimientos de salud"
+}
+
+Respuestas INCORRECTAS (NO hagas esto):
+✗ {"cargos_similares": ["ambientalista", "Mitigacion Ambiental", "Monitoreo Ambiental"]}  ← inventaste palabras que no estan
+✗ {"cargos_similares": ["Ingeniero Ambiental", "Especialista Ambiental"]}  ← combinaste rol + area
+✗ {"cargos_similares": ["Medio Ambiente"]}  ← "Medio Ambiente" es area, NO cargo
+
+EJEMPLO 4 (Forma B — roles + multiples areas con "en/de:"):
+Texto: "Ingeniero y/o Especialista y/o jefe y/o Supervisor y/o Responsable y/o Coordinador o la combinacion de estos en/de: Instalaciones de telecomunicaciones y/o redes de datos y/o voz y data y/o Tecnologia de la informacion y/o sistemas de informacion o la combinacion de estos, en la supervision y/o ejecucion de obras."
+
+Respuesta CORRECTA:
+{
+  "cargos_similares": ["Ingeniero", "Especialista", "jefe", "Supervisor", "Responsable", "Coordinador"],
+  "tipo_obra": null
+}
+
+Respuesta INCORRECTA:
+✗ Incluir "Instalaciones de telecomunicaciones", "redes de datos", "voz y data", etc. ← son areas, no cargos
 
 Responde SOLO con JSON valido, sin explicacion. Si la celda esta vacia o no tiene cargos:
 {"cargos_similares": [], "tipo_obra": null}
@@ -240,6 +285,75 @@ def _limpiar_json_raw(raw: str) -> str:
     if start > 0:
         raw = raw[start:]
     return raw.strip("`").strip()
+
+
+def _normalizar_para_busqueda(texto: str) -> str:
+    """Normaliza para busqueda fuzzy: lowercase + sin tildes + espacios colapsados."""
+    if not texto:
+        return ""
+    import unicodedata
+    t = unicodedata.normalize("NFD", texto.lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _filtrar_alucinaciones(
+    cargos_llm: list[str],
+    texto_celda: str,
+) -> tuple[list[str], list[str]]:
+    """
+    Red de seguridad anti-alucinacion.
+
+    El LLM puede inventar cargos que no estan literal en el texto. Para cada
+    cargo devuelto, verifica que aparezca en el texto de la celda (con
+    tolerancia a typos OCR via fuzzy match >= 80).
+
+    Returns:
+        (cargos_validos, alucinaciones_descartadas)
+
+    Ej: si el texto dice "Ingeniero y/o Especialista en/de: Medio Ambiente"
+    y el LLM devuelve ["Ingeniero", "Especialista", "Mitigacion Ambiental"],
+    "Mitigacion Ambiental" se filtra porque no aparece en el texto.
+    """
+    if not cargos_llm:
+        return [], []
+
+    texto_norm = _normalizar_para_busqueda(texto_celda)
+    if not texto_norm:
+        return cargos_llm, []
+
+    # Si rapidfuzz disponible, usar partial_ratio para tolerar typos OCR
+    try:
+        from rapidfuzz import fuzz as _fuzz
+        usar_fuzzy = True
+    except ImportError:
+        usar_fuzzy = False
+
+    validos: list[str] = []
+    descartados: list[str] = []
+
+    for cargo in cargos_llm:
+        cargo_norm = _normalizar_para_busqueda(cargo)
+        if not cargo_norm or len(cargo_norm) < 3:
+            descartados.append(cargo)
+            continue
+
+        # Match directo (rapido)
+        if cargo_norm in texto_norm:
+            validos.append(cargo)
+            continue
+
+        # Match fuzzy (tolera typos OCR como "electricc" vs "electrico")
+        if usar_fuzzy:
+            score = _fuzz.partial_ratio(cargo_norm, texto_norm)
+            if score >= 85:
+                validos.append(cargo)
+                continue
+
+        descartados.append(cargo)
+
+    return validos, descartados
 
 
 def parsear_b2_celda_con_llm(texto_celda: str) -> dict:
@@ -300,14 +414,29 @@ def parsear_b2_celda_con_llm(texto_celda: str) -> dict:
         if tipo_obra and not isinstance(tipo_obra, str):
             tipo_obra = None
 
+        # Red de seguridad anti-alucinacion: cada cargo debe aparecer
+        # literalmente en el texto de la celda. Si el LLM invento variantes
+        # ("Mitigacion Ambiental" cuando el texto solo dice "Medio Ambiente"),
+        # las descartamos aqui.
+        cargos_validos, alucinaciones = _filtrar_alucinaciones(
+            cargos_limpios, texto_limpio,
+        )
+
+        if alucinaciones:
+            logger.warning(
+                "[cell-parser] B.2: %d alucinacion(es) descartadas: %s",
+                len(alucinaciones), alucinaciones[:5],
+            )
+
         logger.info(
-            "[cell-parser] B.2 parseada: %d cargos en %.1fs",
-            len(cargos_limpios), elapsed,
+            "[cell-parser] B.2 parseada: %d cargos validos (%d filtrados) en %.1fs",
+            len(cargos_validos), len(alucinaciones), elapsed,
         )
         return {
-            "cargos_similares": cargos_limpios,
+            "cargos_similares": cargos_validos,
             "tipo_obra": tipo_obra,
             "_elapsed_s": round(elapsed, 2),
+            "_alucinaciones_descartadas": alucinaciones,
         }
 
     except Exception as e:
