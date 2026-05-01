@@ -344,12 +344,29 @@ def _filtrar_alucinaciones(
             validos.append(cargo)
             continue
 
-        # Match fuzzy (tolera typos OCR como "electricc" vs "electrico")
+        # Match fuzzy (tolera typos OCR menores). Usamos token_set_ratio en
+        # vez de partial_ratio para evitar que palabras que comparten prefijo
+        # ("ambientalista" vs "ambiente") matcheen falsamente. Threshold 92
+        # alto: solo deja pasar typos OCR genuinos (electricc vs electrico),
+        # NO variantes morfologicas inventadas por el LLM.
         if usar_fuzzy:
-            score = _fuzz.partial_ratio(cargo_norm, texto_norm)
-            if score >= 85:
-                validos.append(cargo)
-                continue
+            # Verificar que cada palabra significativa del cargo aparezca
+            # en el texto. Asi "ambientalista" no matchea con "ambiente" del texto.
+            palabras_cargo = [
+                p for p in cargo_norm.split() if len(p) >= 4
+            ]
+            if palabras_cargo:
+                # Cada palabra >= 4 chars del cargo debe estar (con tolerancia)
+                # en el texto. Suficiente que la mayoria este (>= 75%).
+                hits = sum(
+                    1 for p in palabras_cargo
+                    if _fuzz.partial_ratio(p, texto_norm) >= 92
+                )
+                if hits >= max(1, int(len(palabras_cargo) * 0.75)):
+                    # Y ademas el ratio global debe ser razonable
+                    if _fuzz.token_set_ratio(cargo_norm, texto_norm) >= 80:
+                        validos.append(cargo)
+                        continue
 
         descartados.append(cargo)
 
@@ -428,15 +445,40 @@ def parsear_b2_celda_con_llm(texto_celda: str) -> dict:
                 len(alucinaciones), alucinaciones[:5],
             )
 
+        # Fallback determinista: si despues del filtro quedan < 2 cargos pero
+        # el texto era sustancial (> 100 chars), el LLM claramente fallo.
+        # Re-extraer con regex puro que parsea estructura "X y/o Y y/o Z".
+        # Caso real: fila 13 "Ingeniero y/o Especialista y/o ... en/de: Medio
+        # Ambiente" donde el LLM devolvio solo ['ambientalista'] (alucinado).
+        usado_fallback = False
+        if len(cargos_validos) < 2 and len(texto_limpio) > 100:
+            try:
+                regex_result = parsear_b2_celda_regex(texto_limpio)
+                cargos_regex = regex_result.get("cargos_similares", []) or []
+                if len(cargos_regex) > len(cargos_validos):
+                    logger.warning(
+                        "[cell-parser] B.2: LLM solo dio %d cargos validos para %d chars — "
+                        "fallback regex recupero %d cargos",
+                        len(cargos_validos), len(texto_limpio), len(cargos_regex),
+                    )
+                    cargos_validos = cargos_regex
+                    if not tipo_obra:
+                        tipo_obra = regex_result.get("tipo_obra")
+                    usado_fallback = True
+            except Exception as e:
+                logger.warning("[cell-parser] B.2: fallback regex fallo: %s", e)
+
         logger.info(
-            "[cell-parser] B.2 parseada: %d cargos validos (%d filtrados) en %.1fs",
-            len(cargos_validos), len(alucinaciones), elapsed,
+            "[cell-parser] B.2 parseada: %d cargos validos (%d filtrados, fallback=%s) en %.1fs",
+            len(cargos_validos), len(alucinaciones),
+            "regex" if usado_fallback else "no", elapsed,
         )
         return {
             "cargos_similares": cargos_validos,
             "tipo_obra": tipo_obra,
             "_elapsed_s": round(elapsed, 2),
             "_alucinaciones_descartadas": alucinaciones,
+            "_fallback_regex_used": usado_fallback,
         }
 
     except Exception as e:
