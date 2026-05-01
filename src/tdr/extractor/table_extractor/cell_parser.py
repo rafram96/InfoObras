@@ -64,6 +64,46 @@ _PREFIJOS_TITULO = (
 )
 
 
+def _limpiar_typos_ocr_comunes(texto: str) -> str:
+    """
+    Normaliza typos comunes que introduce el OCR (PaddleOCR / PP-Structure).
+
+    Patrones observados en TDRs reales:
+    - "y/0" → "y/o"  (cero en vez de letra o tras el slash)
+    - "Eléctricc" → "Eléctrico"  (consonante doblada al final, OCR pierde la 'o')
+    - "Industrialy" / "Laboraly" → "Industrial y" / "Laboral y" (falta espacio)
+    - Doble espacio o no-break space → espacio simple
+    """
+    if not texto:
+        return texto
+
+    # 0. Normalizar non-break space y otros whitespace exoticos
+    texto = texto.replace(" ", " ").replace(" ", " ").replace(" ", " ")
+
+    # 1. "y/0" / "Y/0" / "y/O" → "y/o" (cero o O confundidos)
+    texto = re.sub(r"\by\s*/\s*0\b", "y/o", texto)
+    texto = re.sub(r"\by\s*/\s*O\b", "y/o", texto, flags=re.IGNORECASE)
+
+    # 2. Espacio faltante antes de "y/o" cuando viene pegado a una palabra:
+    #    "Industrialy/o" → "Industrial y/o"
+    #    "Laboraly/o"    → "Laboral y/o"
+    texto = re.sub(r"(?<=[a-záéíóúñ])y/o", " y/o", texto, flags=re.IGNORECASE)
+
+    # 3. Consonante final duplicada en titulos comunes (typo OCR conocido):
+    #    "Eléctricc" → "Eléctrico", "Mecánicc" → "Mecánico", "Electronicc" → "Electronico"
+    #    Solo aplica al final de palabra para no romper palabras legitimas.
+    texto = re.sub(
+        r"(?<![a-záéíóúñ])([A-Za-záéíóúñ]+)(c)c\b",
+        r"\1\2o",
+        texto,
+    )
+
+    # 4. Colapsar espacios multiples
+    texto = re.sub(r"\s+", " ", texto).strip()
+
+    return texto
+
+
 def parsear_profesiones(texto_celda: str) -> list[str]:
     """
     Parsea el contenido de la celda FORMACION ACADEMICA de B.1.
@@ -73,6 +113,8 @@ def parsear_profesiones(texto_celda: str) -> list[str]:
     - "Ingeniero Sanitario y/o Ingeniero Civil" → ["Ingeniero Sanitario", "Ingeniero Civil"]
     - "Tecnólogo Médico y/o Médico y/o Ingeniero Mecatrónico..." → split correctly
     - "Ingeniero civil" → ["Ingeniero civil"]
+    - "Ingeniero Eléctricc y/0 Ingeniero Electronico" → ["Ingeniero Eléctrico", "Ingeniero Electronico"]
+      (typos OCR normalizados antes del split)
 
     Filtra footnotes (numeros sueltos) y normaliza espacios.
     """
@@ -84,6 +126,10 @@ def parsear_profesiones(texto_celda: str) -> list[str]:
 
     # 2. Normalizar espacios y newlines
     texto = re.sub(r"\s+", " ", texto).strip()
+
+    # 2b. Limpiar typos OCR comunes ANTES del split (sin esto el split de "y/0"
+    #     no funciona y profesiones quedan pegadas)
+    texto = _limpiar_typos_ocr_comunes(texto)
 
     # 3. Split por "y/o" o ","
     items = _SEPARADORES_PROFESION.split(texto)
