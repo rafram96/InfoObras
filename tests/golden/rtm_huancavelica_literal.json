@@ -264,13 +264,16 @@
       "experiencia_minima": {
         "cantidad": 24,
         "unidad": "meses",
+        "_nota_ocr": "El OCR del motor pierde 'inspector y/o ambientalista' y los footnotes 91/92 del PDF original. El extractor solo ve 6 de los 8 roles. F1 limitado por OCR upstream, no por el cell_parser.",
         "cargos_similares_validos": [
           "Ingeniero",
           "Especialista",
-          "supervisor",
-          "jefe",
+          "Supervisor",
+          "Jefe",
           "Responsable",
-          "Coordinador"
+          "Coordinador",
+          "inspector",
+          "ambientalista"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
