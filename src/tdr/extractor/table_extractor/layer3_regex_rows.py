@@ -174,23 +174,36 @@ _CATALOGO_NORMALIZADO: list[tuple[str, str]] = [
 
 # ── Detector de inicios de fila ──────────────────────────────────────────────
 
-def _es_inicio_de_fila(linea: str, threshold: int = 85) -> Optional[str]:
+def _es_inicio_de_fila(linea: str, threshold: int = 92) -> Optional[str]:
     """
     Si la linea es probablemente el inicio de una fila B.1, retorna
     el cargo canonicalizado del catalogo. Si no, retorna None.
 
     Usa fuzzy match para tolerar OCR ruidoso ("GERENTEDE CONTRATO" → "GERENTE DE CONTRATO").
+
+    Threshold default 92 (subido de 85 tras descubrir que sobre-detectaba
+    por catalogo con palabras genericas: "INGENIERO RESIDENTE" matcheaba
+    50+ lineas distintas porque "Ingeniero" aparece mucho en el texto OCR).
     """
     linea_norm = _normalizar_para_match(linea)
     if len(linea_norm) < 8:
+        return None
+
+    # Filtro adicional: la linea tiene que ser corta-mediana (un cargo en B.1
+    # ocupa typicamente 1-2 lineas de ~50-100 chars). Lineas largas (>200
+    # chars) son texto descriptivo, no encabezados de cargo.
+    if len(linea_norm) > 200:
         return None
 
     mejor_score = 0
     mejor_cargo = None
 
     for cargo, cargo_norm in _CATALOGO_NORMALIZADO:
-        # partial_ratio acepta substring fuzzy (linea puede tener prefijo numero)
-        score = fuzz.partial_ratio(cargo_norm, linea_norm)
+        # token_set_ratio es mas estricto que partial_ratio: exige que las
+        # palabras del cargo aparezcan en la linea (no solo subcadenas).
+        # Asi 'INGENIERO RESIDENTE' NO matchea con 'Ingeniero Civil y/o
+        # Arquitecto' (que solo comparte 'Ingeniero').
+        score = fuzz.token_set_ratio(cargo_norm, linea_norm)
         # Prioriza match mas largo si tienen mismo score
         if score > mejor_score or (
             score == mejor_score
@@ -243,6 +256,7 @@ def segmentar_filas_b1(texto: str, esperados: int = 17) -> list[tuple[int, str, 
 
     # ── Pasada 1: anclaje por catalogo OSCE ──────────────────────────────
     inicios_catalogo: list[tuple[int, str]] = []  # (linea_idx, cargo_canonical)
+    cargos_ya_vistos: set[str] = set()
     for i, linea in enumerate(lineas):
         cargo = _es_inicio_de_fila(linea)
         if cargo:
@@ -254,7 +268,27 @@ def segmentar_filas_b1(texto: str, esperados: int = 17) -> list[tuple[int, str, 
                 and (i - inicios_catalogo[-1][0]) < 3
             ):
                 continue
+            # Dedup global: si el mismo cargo canonico ya aparecio antes,
+            # ignorar. Cada cargo del catalogo OSCE debe aparecer 1 vez en
+            # el TDR (no es razonable que un TDR tenga 2 'GERENTE DE CONTRATO').
+            # Esto evita la sobre-segmentacion cuando OCR repite un cargo
+            # (ej: header de pagina repetido, footnotes que re-mencionan).
+            if cargo in cargos_ya_vistos:
+                continue
             inicios_catalogo.append((i, cargo))
+            cargos_ya_vistos.add(cargo)
+
+    # Cap de seguridad: si aun asi tenemos mas filas que esperadas + 30%,
+    # nos quedamos solo con las primeras N. Mejor 17 cargos buenos que 51
+    # con basura.
+    cap = int(esperados * 1.3) if esperados > 0 else 25
+    if len(inicios_catalogo) > cap:
+        logger.warning(
+            "[layer3] Sobre-deteccion: %d cargos detectados pero esperados %d "
+            "(cap %d). Truncando a primeros %d.",
+            len(inicios_catalogo), esperados, cap, cap,
+        )
+        inicios_catalogo = inicios_catalogo[:cap]
 
     # ── Pasada 2 (fallback): si catalogo encontro pocos, usar numeros ────
     inicios_finales = inicios_catalogo
