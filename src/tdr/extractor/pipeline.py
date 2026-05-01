@@ -712,11 +712,65 @@ def _marcar_cargos_no_en_fuente(
     return items
 
 
+def _viene_del_3capas(item: dict) -> bool:
+    """True si el item fue mergeado con datos del pipeline 3-capas (literal del PDF)."""
+    fuente = (item.get("_fuente_extraccion") or "").lower()
+    return fuente.startswith("merge:textual+layer") or fuente.startswith("layer")
+
+
+def _descripciones_b2_distintas(items_grupo: list[dict], min_diferencia: float = 0.30) -> bool:
+    """
+    True si las descripciones literales (B.2 'descripcion') de los items del
+    grupo son sustancialmente distintas entre si.
+
+    Si lo son: el PDF dice cosas diferentes en cada celda — la coincidencia
+    en profesiones/cargos es una coincidencia legitima del documento, no
+    laziness del LLM. Es seguro NO marcar como sospechoso.
+
+    Compara longitudes y substring overlap. Si la diferencia promedio entre
+    pares es >= min_diferencia (30% del texto distinto), considera que las
+    descripciones son distintas.
+    """
+    descs = []
+    for it in items_grupo:
+        exp = it.get("experiencia_minima") or {}
+        d = (exp.get("descripcion") or "").strip().lower()
+        if d:
+            descs.append(d)
+    if len(descs) < 2:
+        return False
+
+    # Diff por pares: si dos descripciones tienen <70% en comun, son distintas
+    import difflib
+    n_pares = 0
+    suma_dif = 0.0
+    for i in range(len(descs)):
+        for j in range(i + 1, len(descs)):
+            ratio = difflib.SequenceMatcher(None, descs[i], descs[j]).ratio()
+            suma_dif += (1.0 - ratio)
+            n_pares += 1
+    if n_pares == 0:
+        return False
+    diff_promedio = suma_dif / n_pares
+    return diff_promedio >= min_diferencia
+
+
 def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
     """
     Detecta items que son copy-paste formulaico del LLM (patron tipico de alucinacion).
     Si >=2 items comparten EXACTAMENTE las mismas profesiones_aceptadas y
-    cargos_similares_validos, probablemente son fabricados — marca _needs_review.
+    cargos_similares_validos, PUEDE ser que el LLM se hizo el vago — pero
+    antes de marcar, verifica que el patron NO sea legitimo del PDF.
+
+    Reglas para NO marcar (= patron legitimo, no LLM flojo):
+    1. Todos los items del grupo vienen del pipeline 3-capas (extraccion literal
+       del PDF). El cell_parser por celda aislada no puede generar copia
+       formulaica entre filas distintas.
+    2. Las descripciones literales (B.2) son sustancialmente distintas entre
+       si — eso significa que el PDF dice cosas diferentes en cada celda,
+       y la coincidencia en profesiones/cargos es una repeticion real del
+       documento (TDRs OSCE suelen usar el mismo molde de roles para varios
+       cargos electrico/mecanico/electromecanico).
     """
     # Agrupar por firma (profesiones + cargos_similares)
     firmas: dict[tuple, list[int]] = {}
@@ -731,10 +785,30 @@ def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
     for firma, indices in firmas.items():
         if len(indices) < 2:
             continue
-        # Patron sospechoso: multiples items con firma identica.
-        # El CARGO puede ser real pero las profesiones/cargos_similares_validos
-        # fueron resumidos formulaicamente por el LLM.
+        items_grupo = [items[i] for i in indices]
         profs, cargos_sim = firma
+
+        # ── Skip 1: todos vienen del 3-capas → fuente literal verificable ──
+        if all(_viene_del_3capas(it) for it in items_grupo):
+            logger.info(
+                "[validador] Firma repetida en %d items pero todos vienen del 3-capas "
+                "(literal del PDF). NO se marca como sospechoso.",
+                len(indices),
+            )
+            continue
+
+        # ── Skip 2: descripciones literales B.2 distintas → patron del PDF, no LLM ──
+        if _descripciones_b2_distintas(items_grupo):
+            logger.info(
+                "[validador] Firma repetida en %d items pero las descripciones B.2 "
+                "literales del PDF son distintas. El patron viene del PDF (TDR usa "
+                "el mismo molde de roles para varios cargos), no es laziness del LLM. "
+                "NO se marca como sospechoso.",
+                len(indices),
+            )
+            continue
+
+        # ── Marcar como sospechoso (patron formulaico real del LLM) ──
         for idx in indices:
             item = items[idx]
             if not item.get("_needs_review"):
@@ -1697,13 +1771,10 @@ def extraer_bases(
             elif block.block_type == "capacitacion":
                 _capacitaciones_raw.extend(data.get("capacitaciones", []))
 
-    # Detectar items con firma copy-paste identica (sintoma de alucinacion LLM).
-    # No se descartan — se marcan _needs_review para revision manual.
-    resultado["rtm_personal"] = _detectar_copy_paste_fabricacion(
-        resultado["rtm_personal"],
-    )
-
     # Post-proceso: deduplicar personal y limpiar entradas vacías
+    # NOTA: la deteccion de copy-paste formulaico se hace MAS ABAJO, despues
+    # del merge 3-capas y la pasada llm-profesiones, para evaluar el resultado
+    # FINAL (con datos del PDF literal) y no datos intermedios del LLM textual.
     resultado["rtm_personal"] = _dedup_personal(resultado["rtm_personal"])
 
     # Ordenar por N° del PDF para que los items del retry queden en su posicion
@@ -1821,6 +1892,17 @@ def extraer_bases(
                 )
         except Exception as e:
             logger.warning("[pipeline] Reextraccion de profesiones B.1 fallo: %s", e)
+
+    # Detectar items con firma copy-paste identica (sintoma de alucinacion LLM).
+    # No se descartan — se marcan _needs_review para revision manual.
+    # Se aplica al final, DESPUES del merge 3-capas y la pasada llm-profesiones,
+    # para evaluar el resultado FINAL. La nueva implementacion respeta items
+    # que vienen del 3-capas (extraccion literal del PDF) y descripciones B.2
+    # distintas (TDRs OSCE legitimamente repiten el mismo molde de roles para
+    # cargos electrico/mecanico/electromecanico).
+    resultado["rtm_personal"] = _detectar_copy_paste_fabricacion(
+        resultado["rtm_personal"],
+    )
 
     # Cruce capacitación → rtm_personal por cargo normalizado
     if _capacitaciones_raw:
