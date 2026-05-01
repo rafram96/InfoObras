@@ -1761,11 +1761,24 @@ def extraer_bases(
             )
             if profs_por_fila:
                 actualizados = 0
+                skipped_3capas = 0
                 for item in resultado["rtm_personal"]:
                     num = item.get("numero_fila")
                     if num is None:
                         num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
                     if num not in profs_por_fila:
+                        continue
+
+                    # Skip: si el 3-capas (PP-Structure / pdfplumber) ya pobló
+                    # profesiones para este item, NO unionizar con la pasada LLM
+                    # textual — esa pasada ve full_text y sufre cross-row, y el
+                    # union mete alucinaciones de filas vecinas (medico/tecnologo
+                    # en COMUNICACIONES, etc.). Las del 3-capas vienen de celdas
+                    # aisladas, son la fuente confiable.
+                    fuente = item.get("_fuente_extraccion", "")
+                    profs_3capas = item.get("profesiones_aceptadas") or []
+                    if fuente.startswith("merge:textual+layer") and profs_3capas:
+                        skipped_3capas += 1
                         continue
 
                     nuevas_profs = profs_por_fila[num]
@@ -1803,8 +1816,8 @@ def extraer_bases(
                         actualizados += 1
 
                 logger.info(
-                    "[pipeline] Profesiones B.1 mergeadas: %d/%d items actualizados",
-                    actualizados, len(resultado["rtm_personal"]),
+                    "[pipeline] Profesiones B.1 mergeadas: %d/%d items actualizados (skipped por 3-capas: %d)",
+                    actualizados, len(resultado["rtm_personal"]), skipped_3capas,
                 )
         except Exception as e:
             logger.warning("[pipeline] Reextraccion de profesiones B.1 fallo: %s", e)
