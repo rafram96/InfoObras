@@ -1,5 +1,6 @@
 {
-  "_nota": "Golden con interpretación LITERAL del PDF: cargos_similares_validos contiene SÓLO los roles/cargos que el PDF lista antes de 'en/de:' (Lista A), sin combinarlos con las áreas/especialidades (Lista B). Las áreas (Telecomunicaciones, Cableado Estructurado, etc.) viven en la columna B.2 pero no se mezclan con los roles. Profesiones tomadas del PDF original (no del OCR).",
+  "_nota": "Golden con interpretacion LITERAL del PDF. cargos_similares_validos = roles que el PDF lista antes de 'en/de:' (Lista A en Forma B) o todos los cargos si la celda es Forma A (cargos completos sin 'en/de:'). profesiones_aceptadas = literal de la columna FORMACION ACADEMICA de B.1, sin footnotes. Datos verificados contra el PDF original (no del OCR).",
+  "_fuente": "PDF rtm.18-04-2026 — datos extraidos manualmente de B.1 y B.2",
   "nombre_tdr": "rtm.18-04-2026-123526",
   "rtm_personal": [
     {
@@ -13,10 +14,10 @@
           "Gerente de Obra",
           "Gerente de Proyecto",
           "Coordinador de Obra",
-          "Gerente de Supervisión de obra",
-          "Director de Construcción",
+          "Gerente de Supervisión",
+          "Gerente de Construcción",
           "Director de Proyectos",
-          "Director de obra",
+          "director de obra",
           "Gerente de Contrato de Supervisión"
         ]
       },
@@ -34,11 +35,13 @@
           "Jefe de Equipo de Supervisión",
           "Ingeniero Supervisor de Obra",
           "Inspector de Obra",
-          "Coordinador de Obra",
+          "Supervisor de obra",
           "Coordinador de Supervisión de obra",
+          "residente",
+          "residente de obra",
           "jefe de supervisión",
           "supervisor",
-          "gerente de supervisión"
+          "ingeniero supervisor"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -46,7 +49,7 @@
     {
       "numero_fila": 3,
       "cargo": "INGENIERO DE CAMPO",
-      "profesiones_aceptadas": ["Ingeniero Civil"],
+      "profesiones_aceptadas": ["Ingeniero civil"],
       "experiencia_minima": {
         "cantidad": 36,
         "unidad": "meses",
@@ -55,7 +58,8 @@
           "Asistente de supervisor de obra",
           "asistente de jefe de supervisión",
           "supervisor",
-          "gerente de supervisión"
+          "gerente de supervisión de obra",
+          "asistente del supervisor"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -67,19 +71,14 @@
       "experiencia_minima": {
         "cantidad": 36,
         "unidad": "meses",
+        "_nota_estructura": "Forma B con 'en/de:' — 6 roles antes, 8 areas despues",
         "cargos_similares_validos": [
           "Especialista",
           "Coordinador",
           "Responsable",
           "inspector",
           "Supervisor",
-          "Coordinador de Obra",
-          "Arquitecto Hospitalario",
-          "Diseño Arquitectónico",
-          "Arquitecto Especialista en Arquitectura",
-          "Arquitecto de campo",
-          "arquitecto",
-          "profesional en arquitectura"
+          "jefe"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -87,7 +86,7 @@
     {
       "numero_fila": 5,
       "cargo": "ESPECIALISTA EN ESTRUCTURAS",
-      "profesiones_aceptadas": ["Ingeniero Civil"],
+      "profesiones_aceptadas": ["Ingeniero civil"],
       "experiencia_minima": {
         "cantidad": 36,
         "unidad": "meses",
@@ -95,7 +94,8 @@
           "Especialista en estructuras",
           "jefe de estructuras",
           "Ingeniero Estructural",
-          "Especialista en diseño estructural"
+          "Especialista en diseño estructural",
+          "Especialista en Estructuras y edificaciones"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -103,7 +103,7 @@
     {
       "numero_fila": 6,
       "cargo": "ESPECIALISTA EN INSTALACIONES SANITARIAS",
-      "profesiones_aceptadas": ["Ingeniero Civil", "Ingeniero Sanitario"],
+      "profesiones_aceptadas": ["Ingeniero Sanitario", "Ingeniero Civil"],
       "experiencia_minima": {
         "cantidad": 36,
         "unidad": "meses",
@@ -111,7 +111,8 @@
           "Especialista en Instalaciones Sanitarias",
           "Jefe en Instalaciones Sanitarias",
           "Ingeniero Sanitario",
-          "Especialista Sanitario"
+          "Especialista Sanitario",
+          "Ingeniero en Instalaciones Sanitarias"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -122,8 +123,8 @@
       "profesiones_aceptadas": [
         "Ingeniero Eléctrico",
         "Ingeniero Electricista",
-        "Ingeniero Electromecánico",
-        "Ingeniero Mecánico Eléctrico"
+        "Ingeniero Mecánico Eléctrico",
+        "Ingeniero Electromecánico"
       ],
       "experiencia_minima": {
         "cantidad": 36,
@@ -144,9 +145,9 @@
       "cargo": "ESPECIALISTA EN INSTALACIONES MECÁNICAS",
       "profesiones_aceptadas": [
         "Ingeniero Mecánico",
-        "Ingeniero Electromecánico",
         "Ingeniero Eléctrico",
-        "Ingeniero Mecánico Eléctrico"
+        "Ingeniero Mecánico Eléctrico",
+        "Ingeniero Electromecánico"
       ],
       "experiencia_minima": {
         "cantidad": 24,
@@ -214,16 +215,21 @@
     {
       "numero_fila": 11,
       "cargo": "ESPECIALISTA EN CONTROL Y ASEGURAMIENTO DE LA CALIDAD",
-      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "profesiones_aceptadas": [
+        "Ingeniero Civil",
+        "Ingeniero Industrial",
+        "Ingeniero de Materiales",
+        "Arquitecto"
+      ],
       "experiencia_minima": {
         "cantidad": 24,
         "unidad": "meses",
         "cargos_similares_validos": [
-          "Ingeniero",
           "Especialista",
           "jefe",
-          "supervisor",
           "Responsable",
+          "Ingeniero",
+          "supervisor",
           "Coordinador"
         ]
       },
@@ -234,10 +240,11 @@
       "cargo": "ESPECIALISTA EN SEGURIDAD Y SALUD EN EL TRABAJO",
       "profesiones_aceptadas": [
         "Ingeniero de Seguridad Laboral y Ambiental",
-        "Ingeniero de Seguridad Industrial",
         "Ingeniero de Seguridad Industrial y Minera",
         "Ingeniero de Higiene y Seguridad Industrial",
-        "Ingeniero Ambiental"
+        "Ingeniero Ambiental",
+        "Ingeniero de Minas",
+        "Ingeniero Civil"
       ],
       "experiencia_minima": {
         "cantidad": 24,
@@ -245,10 +252,12 @@
         "cargos_similares_validos": [
           "Ingeniero",
           "Especialista",
-          "supervisor",
+          "Supervisor",
           "jefe",
           "Responsable",
-          "Coordinador"
+          "Coordinador",
+          "prevencionista",
+          "inspector"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -264,7 +273,7 @@
       "experiencia_minima": {
         "cantidad": 24,
         "unidad": "meses",
-        "_nota_ocr": "El OCR del motor pierde 'inspector y/o ambientalista' y los footnotes 91/92 del PDF original. El extractor solo ve 6 de los 8 roles. F1 limitado por OCR upstream, no por el cell_parser.",
+        "_nota_ocr": "El OCR del motor pierde 'inspector y/o ambientalista' y los footnotes 91/92 del PDF original. El extractor solo ve 6 de los 8 roles. F1 limitado por OCR upstream.",
         "cargos_similares_validos": [
           "Ingeniero",
           "Especialista",
@@ -281,7 +290,7 @@
     {
       "numero_fila": 14,
       "cargo": "ESPECIALISTA EN COSTOS, METRADOS Y VALORIZACIONES",
-      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "profesiones_aceptadas": ["Arquitecto", "Ingeniero Civil"],
       "experiencia_minima": {
         "cantidad": 24,
         "unidad": "meses",
@@ -300,7 +309,7 @@
       "numero_fila": 15,
       "cargo": "ESPECIALISTA EN GEOTECNIA",
       "profesiones_aceptadas": [
-        "Ingeniero Civil",
+        "Ingeniero civil",
         "Ingeniero Geotécnico",
         "Ingeniero Geólogo"
       ],
@@ -310,11 +319,10 @@
         "cargos_similares_validos": [
           "Ingeniero",
           "Especialista",
+          "Supervisor",
           "Jefe",
-          "supervisor",
-          "Coordinador",
-          "Gerente",
-          "Analista"
+          "Responsable",
+          "Coordinador"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
@@ -322,7 +330,7 @@
     {
       "numero_fila": 16,
       "cargo": "ESPECIALISTA BIM",
-      "profesiones_aceptadas": ["Ingeniero Civil", "Arquitecto"],
+      "profesiones_aceptadas": ["Arquitecto", "Ingeniero Civil"],
       "experiencia_minima": {
         "cantidad": 24,
         "unidad": "meses",
@@ -332,7 +340,9 @@
           "Responsable",
           "Ingeniero",
           "supervisor",
-          "Coordinador"
+          "Coordinador",
+          "Gerente",
+          "Analista"
         ]
       },
       "tipo_obra_valido": "establecimientos de salud"
