@@ -21,8 +21,20 @@ from pathlib import Path
 from typing import Any
 import unicodedata
 
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAY_FUZZ = True
+except ImportError:
+    _HAY_FUZZ = False
+
 
 # ── Normalizacion de strings ──────────────────────────────────────────────────
+
+# Threshold default para considerar dos cadenas como "la misma" via fuzzy match.
+# 90 captura typos OCR comunes ("electricc" vs "electrico", "y/0" vs "y/o")
+# sin matchear cosas semanticamente distintas.
+FUZZY_THRESHOLD_DEFAULT = 90
+
 
 def _normalizar(txt: str) -> str:
     """Minusculas + sin tildes + trim + colapsar espacios."""
@@ -41,11 +53,29 @@ def _set_normalizado(lista: list) -> set[str]:
 
 # ── Metricas por item ─────────────────────────────────────────────────────────
 
-def _precision_recall_sets(extraido: set, esperado: set) -> dict:
-    """Calcula precision/recall/F1 comparando 2 sets."""
+def _precision_recall_sets(
+    extraido: set,
+    esperado: set,
+    fuzzy_threshold: int = 0,
+) -> dict:
+    """
+    Calcula precision/recall/F1 comparando 2 sets.
+
+    Si fuzzy_threshold > 0 y rapidfuzz esta disponible, usa fuzzy matching
+    para considerar dos strings como "la misma" si su token_sort_ratio
+    >= fuzzy_threshold. Esto permite tolerar typos OCR ("electricc" vs
+    "electrico") y variantes menores ("y/0" vs "y/o", espacios faltantes).
+
+    Si fuzzy_threshold == 0 o rapidfuzz no esta, usa match exacto sobre
+    las cadenas ya normalizadas (NFD + lower + trim).
+    """
+    if fuzzy_threshold > 0 and _HAY_FUZZ and extraido and esperado:
+        return _precision_recall_fuzzy(extraido, esperado, fuzzy_threshold)
+
+    # Match exacto (legacy)
     tp = len(extraido & esperado)
-    fp = len(extraido - esperado)  # en extraido pero no en esperado (alucinacion)
-    fn = len(esperado - extraido)  # en esperado pero no en extraido (faltante)
+    fp = len(extraido - esperado)
+    fn = len(esperado - extraido)
     prec = tp / (tp + fp) if (tp + fp) > 0 else 1.0 if not esperado else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 1.0 if not extraido else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
@@ -62,7 +92,70 @@ def _precision_recall_sets(extraido: set, esperado: set) -> dict:
     }
 
 
-def _comparar_cargo(extraido: dict, esperado: dict) -> dict:
+def _precision_recall_fuzzy(
+    extraido: set,
+    esperado: set,
+    threshold: int,
+) -> dict:
+    """
+    Match con fuzzy threshold. Cada item del esperado puede matchear con UN
+    item del extraido (greedy: primero el de mayor score). Items no matcheados
+    cuentan como FN/FP segun el lado.
+    """
+    extraido_list = list(extraido)
+    esperado_list = list(esperado)
+    extraido_usados: set[int] = set()
+
+    pares_match: list[tuple[str, str, int]] = []  # (esperado, extraido, score)
+    faltantes: list[str] = []
+
+    for esp in esperado_list:
+        mejor_idx = -1
+        mejor_score = 0
+        for i, ext in enumerate(extraido_list):
+            if i in extraido_usados:
+                continue
+            score = int(_fuzz.token_sort_ratio(esp, ext))
+            if score > mejor_score:
+                mejor_score = score
+                mejor_idx = i
+
+        if mejor_idx >= 0 and mejor_score >= threshold:
+            pares_match.append((esp, extraido_list[mejor_idx], mejor_score))
+            extraido_usados.add(mejor_idx)
+        else:
+            faltantes.append(esp)
+
+    alucinaciones = [
+        e for i, e in enumerate(extraido_list) if i not in extraido_usados
+    ]
+
+    tp = len(pares_match)
+    fp = len(alucinaciones)
+    fn = len(faltantes)
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 1.0 if not esperado_list else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 1.0 if not extraido_list else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+    return {
+        "precision": round(prec, 3),
+        "recall": round(rec, 3),
+        "f1": round(f1, 3),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "faltantes": sorted(faltantes),
+        "extras": [],
+        "alucinaciones": sorted(alucinaciones),
+        "_fuzzy_matches": [
+            f"{esp!r} ~ {ext!r} ({s})" for esp, ext, s in pares_match if s < 100
+        ],
+    }
+
+
+def _comparar_cargo(
+    extraido: dict, esperado: dict, fuzzy_threshold: int = 0,
+) -> dict:
     """Compara un cargo individual y retorna metricas por campo."""
     metricas = {
         "cargo": esperado.get("cargo"),
@@ -73,6 +166,7 @@ def _comparar_cargo(extraido: dict, esperado: dict) -> dict:
     metricas["profesiones"] = _precision_recall_sets(
         _set_normalizado(extraido.get("profesiones_aceptadas") or []),
         _set_normalizado(esperado.get("profesiones_aceptadas") or []),
+        fuzzy_threshold=fuzzy_threshold,
     )
 
     # Cargos similares validos
@@ -81,6 +175,7 @@ def _comparar_cargo(extraido: dict, esperado: dict) -> dict:
     metricas["cargos_similares"] = _precision_recall_sets(
         _set_normalizado(exp_ext),
         _set_normalizado(exp_esp),
+        fuzzy_threshold=fuzzy_threshold,
     )
 
     # Tiempo de experiencia (match exacto)
@@ -151,10 +246,14 @@ def _match_cargos(extraidos: list[dict], esperados: list[dict]) -> list[tuple]:
 def evaluar(
     golden: dict,
     extraido: dict,
+    fuzzy_threshold: int = 0,
 ) -> dict:
     """
     Evalua un extraido contra un golden.
     Ambos tienen estructura: {"rtm_personal": [...]}.
+
+    fuzzy_threshold: 0 = match exacto (legacy), >0 = fuzzy match.
+    Para typos OCR comunes ("electricc", "y/0") usar 90.
     """
     esperados = golden.get("rtm_personal", [])
     extractados = extraido.get("rtm_personal", [])
@@ -173,7 +272,9 @@ def evaluar(
             cargos_alucinados.append(ext.get("cargo") or "sin_cargo")
             continue
         if ext is not None and esp is not None:
-            cargos_evaluados.append(_comparar_cargo(ext, esp))
+            cargos_evaluados.append(
+                _comparar_cargo(ext, esp, fuzzy_threshold=fuzzy_threshold)
+            )
 
     # Agregar metricas
     def _agregar_pr(campo: str) -> dict:
@@ -300,7 +401,26 @@ def main() -> int:
         "--salida-json", default=None,
         help="Si se pasa, guarda metricas detalladas en este path",
     )
+    parser.add_argument(
+        "--fuzzy",
+        type=int,
+        nargs="?",
+        const=FUZZY_THRESHOLD_DEFAULT,
+        default=0,
+        help=(
+            "Activa fuzzy match para tolerar typos OCR ('electricc' vs "
+            "'electrico', 'y/0' vs 'y/o'). Sin valor usa default=90. "
+            "Pasar 0 (default) = match exacto legacy."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.fuzzy > 0 and not _HAY_FUZZ:
+        print(
+            "ADVERTENCIA: --fuzzy pedido pero rapidfuzz no instalado. "
+            "Cayendo a match exacto.",
+            file=sys.stderr,
+        )
 
     golden_path = Path(args.golden)
     if not golden_path.exists():
@@ -322,8 +442,10 @@ def main() -> int:
         print("ERROR: pasar extraido.json o --job-id=...", file=sys.stderr)
         return 1
 
-    metricas = evaluar(golden, extraido)
+    metricas = evaluar(golden, extraido, fuzzy_threshold=args.fuzzy)
     imprimir_reporte(metricas, str(golden_path), etiqueta)
+    if args.fuzzy > 0:
+        print(f"\n(fuzzy match activado, threshold={args.fuzzy})")
 
     if args.salida_json:
         Path(args.salida_json).write_text(

@@ -712,11 +712,65 @@ def _marcar_cargos_no_en_fuente(
     return items
 
 
+def _viene_del_3capas(item: dict) -> bool:
+    """True si el item fue mergeado con datos del pipeline 3-capas (literal del PDF)."""
+    fuente = (item.get("_fuente_extraccion") or "").lower()
+    return fuente.startswith("merge:textual+layer") or fuente.startswith("layer")
+
+
+def _descripciones_b2_distintas(items_grupo: list[dict], min_diferencia: float = 0.30) -> bool:
+    """
+    True si las descripciones literales (B.2 'descripcion') de los items del
+    grupo son sustancialmente distintas entre si.
+
+    Si lo son: el PDF dice cosas diferentes en cada celda — la coincidencia
+    en profesiones/cargos es una coincidencia legitima del documento, no
+    laziness del LLM. Es seguro NO marcar como sospechoso.
+
+    Compara longitudes y substring overlap. Si la diferencia promedio entre
+    pares es >= min_diferencia (30% del texto distinto), considera que las
+    descripciones son distintas.
+    """
+    descs = []
+    for it in items_grupo:
+        exp = it.get("experiencia_minima") or {}
+        d = (exp.get("descripcion") or "").strip().lower()
+        if d:
+            descs.append(d)
+    if len(descs) < 2:
+        return False
+
+    # Diff por pares: si dos descripciones tienen <70% en comun, son distintas
+    import difflib
+    n_pares = 0
+    suma_dif = 0.0
+    for i in range(len(descs)):
+        for j in range(i + 1, len(descs)):
+            ratio = difflib.SequenceMatcher(None, descs[i], descs[j]).ratio()
+            suma_dif += (1.0 - ratio)
+            n_pares += 1
+    if n_pares == 0:
+        return False
+    diff_promedio = suma_dif / n_pares
+    return diff_promedio >= min_diferencia
+
+
 def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
     """
     Detecta items que son copy-paste formulaico del LLM (patron tipico de alucinacion).
     Si >=2 items comparten EXACTAMENTE las mismas profesiones_aceptadas y
-    cargos_similares_validos, probablemente son fabricados — marca _needs_review.
+    cargos_similares_validos, PUEDE ser que el LLM se hizo el vago — pero
+    antes de marcar, verifica que el patron NO sea legitimo del PDF.
+
+    Reglas para NO marcar (= patron legitimo, no LLM flojo):
+    1. Todos los items del grupo vienen del pipeline 3-capas (extraccion literal
+       del PDF). El cell_parser por celda aislada no puede generar copia
+       formulaica entre filas distintas.
+    2. Las descripciones literales (B.2) son sustancialmente distintas entre
+       si — eso significa que el PDF dice cosas diferentes en cada celda,
+       y la coincidencia en profesiones/cargos es una repeticion real del
+       documento (TDRs OSCE suelen usar el mismo molde de roles para varios
+       cargos electrico/mecanico/electromecanico).
     """
     # Agrupar por firma (profesiones + cargos_similares)
     firmas: dict[tuple, list[int]] = {}
@@ -731,10 +785,30 @@ def _detectar_copy_paste_fabricacion(items: list[dict]) -> list[dict]:
     for firma, indices in firmas.items():
         if len(indices) < 2:
             continue
-        # Patron sospechoso: multiples items con firma identica.
-        # El CARGO puede ser real pero las profesiones/cargos_similares_validos
-        # fueron resumidos formulaicamente por el LLM.
+        items_grupo = [items[i] for i in indices]
         profs, cargos_sim = firma
+
+        # ── Skip 1: todos vienen del 3-capas → fuente literal verificable ──
+        if all(_viene_del_3capas(it) for it in items_grupo):
+            logger.info(
+                "[validador] Firma repetida en %d items pero todos vienen del 3-capas "
+                "(literal del PDF). NO se marca como sospechoso.",
+                len(indices),
+            )
+            continue
+
+        # ── Skip 2: descripciones literales B.2 distintas → patron del PDF, no LLM ──
+        if _descripciones_b2_distintas(items_grupo):
+            logger.info(
+                "[validador] Firma repetida en %d items pero las descripciones B.2 "
+                "literales del PDF son distintas. El patron viene del PDF (TDR usa "
+                "el mismo molde de roles para varios cargos), no es laziness del LLM. "
+                "NO se marca como sospechoso.",
+                len(indices),
+            )
+            continue
+
+        # ── Marcar como sospechoso (patron formulaico real del LLM) ──
         for idx in indices:
             item = items[idx]
             if not item.get("_needs_review"):
@@ -1382,7 +1456,50 @@ def extraer_bases(
     pages  = parse_full_text(full_text)
     scored = [score_page(p) for p in pages]
 
-    # ── Extraccion VL estructurada de B.1 y B.2 (opt-in) ──────────────────
+    # ── Extraccion 3-CAPAS estructurada de B.1 y B.2 (opt-in) ─────────────
+    # Si USE_3LAYER_EXTRACTION=true, ejecuta el pipeline de 3 capas que
+    # ataca cross-row contamination de raiz:
+    #   Capa 1: pdfplumber.extract_tables (PDFs digitales con bordes)
+    #   Capa 2: PP-Structure de PaddleOCR (escaneados; placeholder por ahora)
+    #   Capa 3: regex segmentacion + LLM por fila aislada (fallback robusto)
+    # El resultado se mergea con los items del pipeline textual al final.
+    extraccion_3capas = None
+    if pdf_path and os.getenv("USE_3LAYER_EXTRACTION", "false").lower() == "true":
+        try:
+            from src.tdr.extractor.table_extractor import extraer_tdr_3_capas
+            from src.tdr.tables.vl_page_detector import detectar_paginas_b1_b2
+            _scored_pre = [score_page(p) for p in pages]
+            _bloques_pre = group_into_blocks(_scored_pre)
+            paginas_rtm_3l = sorted({
+                p.page_num for b in _bloques_pre
+                if b.block_type == "rtm_personal"
+                for p in b.pages
+            })
+            texto_por_pagina_3l = {p.page_num: p.text for p in pages}
+            paginas_b1_3l, paginas_b2_3l = detectar_paginas_b1_b2(
+                texto_por_pagina_3l, paginas_rtm_3l,
+            )
+            logger.info(
+                "[pipeline] 3-LAYER habilitado: B.1=%s B.2=%s",
+                paginas_b1_3l, paginas_b2_3l,
+            )
+            extraccion_3capas = extraer_tdr_3_capas(
+                pdf_path=pdf_path,
+                texto_por_pagina=texto_por_pagina_3l,
+                paginas_b1=paginas_b1_3l,
+                paginas_b2=paginas_b2_3l,
+                n_filas_esperadas=17,
+            )
+            logger.info(
+                "[pipeline] 3-LAYER OK: capa=%s filas=%d intentadas=%s",
+                extraccion_3capas.capa_usada,
+                len(extraccion_3capas.filas),
+                extraccion_3capas.capas_intentadas,
+            )
+        except Exception as e:
+            logger.warning("[pipeline] 3-LAYER fallo: %s", e)
+
+    # ── Extraccion VL estructurada de B.1 y B.2 (opt-in legacy) ────────────
     # Si USE_VL_TDR_EXTRACTION=true en env, pide a Qwen-VL extraer las tablas
     # B.1 (profesiones) y B.2 (cargos similares) directamente como JSON.
     # Mergea al final con los items del pipeline textual. Ataca cross-fila,
@@ -1654,13 +1771,10 @@ def extraer_bases(
             elif block.block_type == "capacitacion":
                 _capacitaciones_raw.extend(data.get("capacitaciones", []))
 
-    # Detectar items con firma copy-paste identica (sintoma de alucinacion LLM).
-    # No se descartan — se marcan _needs_review para revision manual.
-    resultado["rtm_personal"] = _detectar_copy_paste_fabricacion(
-        resultado["rtm_personal"],
-    )
-
     # Post-proceso: deduplicar personal y limpiar entradas vacías
+    # NOTA: la deteccion de copy-paste formulaico se hace MAS ABAJO, despues
+    # del merge 3-capas y la pasada llm-profesiones, para evaluar el resultado
+    # FINAL (con datos del PDF literal) y no datos intermedios del LLM textual.
     resultado["rtm_personal"] = _dedup_personal(resultado["rtm_personal"])
 
     # Ordenar por N° del PDF para que los items del retry queden en su posicion
@@ -1669,7 +1783,29 @@ def extraer_bases(
         resultado["rtm_personal"], full_text,
     )
 
-    # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa) ──
+    # ── Merge con datos del pipeline 3-CAPAS (si USE_3LAYER_EXTRACTION activo) ──
+    # Las filas del pipeline 3-capas son mas confiables porque eliminan
+    # cross-row contamination por construccion. Reemplazan profesiones,
+    # cargos_similares y tipo_obra del item textual.
+    if extraccion_3capas and extraccion_3capas.filas and resultado["rtm_personal"]:
+        try:
+            from src.tdr.extractor.table_extractor.orchestrator import (
+                mergear_con_pipeline_textual,
+            )
+            items_merged, diag_merge = mergear_con_pipeline_textual(
+                resultado["rtm_personal"], extraccion_3capas,
+            )
+            resultado["rtm_personal"] = items_merged
+            logger.info(
+                "[pipeline] Merge 3-LAYER: actualizados=%d, agregados=%d, solo_textuales=%d",
+                diag_merge.get("items_actualizados", 0),
+                diag_merge.get("items_agregados", 0),
+                diag_merge.get("items_solo_textuales", 0),
+            )
+        except Exception as e:
+            logger.warning("[pipeline] Merge 3-LAYER fallo: %s", e)
+
+    # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa, legacy) ──
     # Los datos VL son mas confiables en layout de tabla (no sufre cross-fila)
     # por lo que REEMPLAZAMOS profesiones y cargos_similares con los del VL,
     # con fallback al textual si VL no tiene esa fila.
@@ -1696,11 +1832,24 @@ def extraer_bases(
             )
             if profs_por_fila:
                 actualizados = 0
+                skipped_3capas = 0
                 for item in resultado["rtm_personal"]:
                     num = item.get("numero_fila")
                     if num is None:
                         num = _inferir_numero_cargo(item.get("cargo", ""), full_text)
                     if num not in profs_por_fila:
+                        continue
+
+                    # Skip: si el 3-capas (PP-Structure / pdfplumber) ya pobló
+                    # profesiones para este item, NO unionizar con la pasada LLM
+                    # textual — esa pasada ve full_text y sufre cross-row, y el
+                    # union mete alucinaciones de filas vecinas (medico/tecnologo
+                    # en COMUNICACIONES, etc.). Las del 3-capas vienen de celdas
+                    # aisladas, son la fuente confiable.
+                    fuente = item.get("_fuente_extraccion", "")
+                    profs_3capas = item.get("profesiones_aceptadas") or []
+                    if fuente.startswith("merge:textual+layer") and profs_3capas:
+                        skipped_3capas += 1
                         continue
 
                     nuevas_profs = profs_por_fila[num]
@@ -1738,11 +1887,22 @@ def extraer_bases(
                         actualizados += 1
 
                 logger.info(
-                    "[pipeline] Profesiones B.1 mergeadas: %d/%d items actualizados",
-                    actualizados, len(resultado["rtm_personal"]),
+                    "[pipeline] Profesiones B.1 mergeadas: %d/%d items actualizados (skipped por 3-capas: %d)",
+                    actualizados, len(resultado["rtm_personal"]), skipped_3capas,
                 )
         except Exception as e:
             logger.warning("[pipeline] Reextraccion de profesiones B.1 fallo: %s", e)
+
+    # Detectar items con firma copy-paste identica (sintoma de alucinacion LLM).
+    # No se descartan — se marcan _needs_review para revision manual.
+    # Se aplica al final, DESPUES del merge 3-capas y la pasada llm-profesiones,
+    # para evaluar el resultado FINAL. La nueva implementacion respeta items
+    # que vienen del 3-capas (extraccion literal del PDF) y descripciones B.2
+    # distintas (TDRs OSCE legitimamente repiten el mismo molde de roles para
+    # cargos electrico/mecanico/electromecanico).
+    resultado["rtm_personal"] = _detectar_copy_paste_fabricacion(
+        resultado["rtm_personal"],
+    )
 
     # Cruce capacitación → rtm_personal por cargo normalizado
     if _capacitaciones_raw:
