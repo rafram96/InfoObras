@@ -1625,6 +1625,139 @@ async def evaluate_job(
     }
 
 
+@app.post("/api/jobs/{extraction_job_id}/cruce-infoobras", tags=["Evaluation"])
+async def cruce_infoobras_job(
+    extraction_job_id: str,
+    tdr_job_id: str = Form(...),
+):
+    """
+    Cruza experiencias del Paso 4 contra InfoObras (Contraloria).
+
+    Por cada experiencia con CUI o nombre de proyecto:
+      - fetch_by_cui o buscar_obra_por_certificado (con cache)
+      - Senales: periodo cert vs duracion obra, paralizaciones del periodo
+      - Verificacion nominal Supervisor/Residente (cuando aplique)
+
+    Senales globales:
+      - Solapamientos del mismo profesional en la misma obra
+      - Multiples profesionales del concurso actual con mismo cargo+obra
+
+    Decision del cliente: cubre 17 cargos para paralizaciones, pero
+    verificacion nominal solo para Supervisor + Residente (los otros
+    cargos NO se registran en InfoObras).
+    """
+    from datetime import date as _date
+
+    # Cargar ambos jobs (mismo patron que /evaluate)
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, job_type, status, result, filename FROM jobs WHERE id = %s",
+                (extraction_job_id,),
+            )
+            ext_row = cur.fetchone()
+            cur.execute(
+                "SELECT id, job_type, status, result FROM jobs WHERE id = %s",
+                (tdr_job_id,),
+            )
+            tdr_row = cur.fetchone()
+
+    if not ext_row:
+        raise HTTPException(404, f"Job de extracción {extraction_job_id} no encontrado")
+    if not tdr_row:
+        raise HTTPException(404, f"Job TDR {tdr_job_id} no encontrado")
+    if ext_row["status"] != "done":
+        raise HTTPException(400, f"Job de extracción no está completado")
+    if tdr_row["status"] != "done":
+        raise HTTPException(400, f"Job TDR no está completado")
+
+    ext_result = ext_row["result"]
+    tdr_result = tdr_row["result"]
+    if isinstance(ext_result, str):
+        ext_result = json.loads(ext_result)
+    if isinstance(tdr_result, str):
+        tdr_result = json.loads(tdr_result)
+
+    # Reconstruir Professional + Experience (mismo patron que /evaluate)
+    from src.extraction.models import Professional, Experience
+    from src.extraction.llm_extractor import _parsear_fecha
+
+    def _try_iso_or_parse(iso_str, raw_str):
+        if iso_str and isinstance(iso_str, str):
+            try:
+                return _date.fromisoformat(iso_str)
+            except ValueError:
+                pass
+        return _parsear_fecha(raw_str)
+
+    profesionales = []
+    experiencias = []
+    for sec in ext_result.get("secciones", []):
+        prof_data = sec.get("profesional") or {}
+        nombre = prof_data.get("nombre") or f"(sin nombre - {sec['cargo']})"
+        prof = Professional(
+            name=nombre,
+            role=sec.get("cargo", ""),
+            role_number=sec.get("numero") or "",
+            profession=prof_data.get("profesion"),
+            tipo_colegio=prof_data.get("tipo_colegio"),
+            registro_colegio=prof_data.get("registro_colegio"),
+            registration_date=None,
+            folio=None,
+            source_file="db",
+        )
+        profesionales.append(prof)
+
+        for exp_data in sec.get("experiencias", []):
+            start = _try_iso_or_parse(exp_data.get("fecha_inicio_parsed"), exp_data.get("fecha_inicio"))
+            end = _try_iso_or_parse(exp_data.get("fecha_fin_parsed"), exp_data.get("fecha_fin"))
+            cert = _try_iso_or_parse(exp_data.get("fecha_emision_parsed"), exp_data.get("fecha_emision"))
+
+            exp = Experience(
+                professional_name=nombre,
+                dni=prof_data.get("dni"),
+                project_name=exp_data.get("proyecto"),
+                role=exp_data.get("cargo"),
+                company=exp_data.get("empresa_emisora"),
+                ruc=exp_data.get("ruc"),
+                start_date=start,
+                end_date=end,
+                cert_issue_date=cert,
+                folio=exp_data.get("folio"),
+                cui=exp_data.get("cui") or exp_data.get("codigo_cui") or None,
+                infoobras_code=exp_data.get("codigo_infoobras") or None,
+                signer=exp_data.get("firmante"),
+                raw_text="",
+                source_file="db",
+                tipo_obra=exp_data.get("tipo_obra"),
+                tipo_intervencion=exp_data.get("tipo_intervencion"),
+                tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                cargo_firmante=exp_data.get("cargo_firmante"),
+            )
+            experiencias.append(exp)
+
+    # Paso 4 (motor de reglas)
+    from src.validation.evaluator import evaluar_propuesta
+    resultados = evaluar_propuesta(
+        profesionales=profesionales,
+        experiencias=experiencias,
+        requisitos_rtm=tdr_result.get("rtm_personal", []),
+        proposal_date=_date.today(),
+    )
+
+    # Cruce InfoObras
+    from src.validation.cruce_infoobras import cruzar_resultados
+    cache_obras: dict = {}
+    cruce = cruzar_resultados(resultados, cache_obras=cache_obras)
+
+    return {
+        "ok": True,
+        "extraction_job_id": extraction_job_id,
+        "tdr_job_id": tdr_job_id,
+        **cruce.to_dict(),
+    }
+
+
 @app.get("/api/jobs/{job_id}/log", tags=["Jobs"])
 async def get_job_log(job_id: str):
     """
