@@ -203,13 +203,13 @@ def _write_profesionales(wb, resultados: list[ResultadoProfesional]) -> None:
     """
     ws = wb.create_sheet("PROFESIONALES")
     headers = [
-        "N°",
-        "Nombre del Profesional",
-        "Profesión (según título profesional)",
-        "Fecha de colegiación",
-        "Especialidad a la que postulan",
-        "Folio de la colegiatura",
-        "Folio del nombre del profesional",
+        "No",
+        "Columna 1: Nombre del Profesional",
+        "Columna 2: Profesión (según título profesional)",
+        "Columna 3: Fecha de colegiación",
+        "Columna 4: Especialidad a la que postulan",
+        "Columna 5: Folio de la colegiatura",
+        "Columna 6: Folio del nombre del profesional",
     ]
     _aplicar_header(ws, headers)
     _set_column_widths(ws, [5, 38, 30, 15, 38, 18, 22])
@@ -245,17 +245,17 @@ def _write_requisitos_tdr(wb, resultados: list[ResultadoProfesional]) -> None:
     """
     ws = wb.create_sheet("REQUISITOS_TDR")
     headers = [
-        "Cargo y Profesión (Titulado Profesional)",
-        "Años de Colegiado",
-        "Requisito Mínimo (Tiempo y Cargos Similares) y Puntuación",
-        "Tipo de experiencia similar (Tipo de obra)",
-        "Tiempo adicional en Factores de Evaluación",
-        "Capacitación en Factores de Evaluación",
+        "Columna 1: Cargo y Profesión (Titulado Profesional)",
+        "Columna 2: Años de Colegiado",
+        "Columna 3: Requisito Mínimo (Tiempo y Cargos Similares) y Puntuación",
+        "Columna 4: Tipo de experiencia similar (Tipo de obra)",
+        "Columna 5: Tiempo adicional en Factores de Evaluación",
+        "Columna 6: Capacitación en Factores de Evaluación",
         # Columnas manuales del evaluador (en blanco):
-        "NOMBRE",
-        "TRABAJARÁN",
-        "MONTO TOTAL",
-        "AÑOS ACUMULADOS",
+        "Columna 7: Nombre asignado",
+        "Columna 8: Trabajará en el cargo",
+        "Columna 9: Monto Total",
+        "Columna 10: Años Acumulados",
     ]
     _aplicar_header(ws, headers)
     _set_column_widths(ws, [42, 18, 50, 32, 32, 32, 22, 22, 14, 16])
@@ -339,36 +339,36 @@ def _write_bd_experiencias(
     """
     ws = wb.create_sheet("BD_EXPERIENCIAS")
     headers = [
-        "Nombre del Profesional",
-        "DNI / Colegiatura",
-        "Nombre del proyecto",
-        "Cargo en el proyecto",
-        "Consorcio o empresa emisora",
-        "RUC emisor",
-        "Pública o Privada",
-        "Tipo de acreditación",
-        "Fecha de inicio",
-        "Fecha de fin",
-        "Alerta COVID",
-        "Años decimal",                    # col 12 — calculo interno
-        "Años acumulados (profesional)",   # col 13 — calculo interno
-        "Duración de la experiencia",
-        "Fecha de emisión",
-        "ALERTA emisión",                  # ALT01: fecha fin > emision
-        "Folio",
-        "Firma el certificado",
-        "Cargo del firmante",
-        "ALERTA no representante",         # cargo firmante no es representante legal
-        "Fecha creación (SUNAT)",          # N/A por ahora
-        "ALERTA creación",                 # ALT04: empresa post-experiencia
-        "ALERTA > 25 años",                # ALT03
-        "Documento presentado",
-        "Código CUI / CIU",
-        "Código InfoObras",
-        "Fecha creación y ALERTA",         # combinado, vacio si SUNAT no integrado
-        "Otras alertas (lenguaje natural)",
-        "Cargo postulado",
-        "Profesión propuesta",
+        "Col 1: Nombre del Profesional",
+        "Col 2: DNI / Colegiatura",
+        "Col 3: Nombre del proyecto",
+        "Col 4: Cargo en el proyecto",
+        "Col 5: Consorcio o empresa emisora",
+        "Col 6: RUC emisor",
+        "Col 7: Pública o Privada",
+        "Col 8: Tipo de acreditación",
+        "Col 9: Fecha de inicio",
+        "Col 10: Fecha de fin",
+        "Col 11: Alerta COVID",
+        "Col 12: Años decimal",                       # calculo interno
+        "Col 13: Años acumulados (profesional)",      # calculo interno
+        "Col 14: Duración de la experiencia",
+        "Col 15: Fecha de emisión",
+        "Col 16: ALERTA emisión",                     # ALT01
+        "Col 17: Folio",
+        "Col 18: Firma el certificado",
+        "Col 19: Cargo del firmante",
+        "Col 20: ALERTA no representante",
+        "Col 21: Fecha creación (SUNAT)",             # N/A por ahora
+        "Col 22: ALERTA creación",                    # ALT04
+        "Col 23: ALERTA > 25 años",                   # ALT03 (cliente actualizo de 20 a 25)
+        "Col 24: Documento presentado",
+        "Col 25: Código CUI / CIU",
+        "Col 26: Código InfoObras",
+        "Col 27: Fecha creación y ALERTA",
+        "Col 28: Otras alertas (lenguaje natural)",
+        "Col 29: Cargo postulado",
+        "Col 30: Profesión propuesta",
     ]
     _aplicar_header(ws, headers)
     _set_column_widths(
@@ -520,31 +520,31 @@ def _write_analisis_rtm(wb, resultados: list[ResultadoProfesional]) -> None:
     """
     ws = wb.create_sheet("ANALISIS_RTM")
     headers = [
-        "Cargo en el proyecto / OBRA",
-        "Nombre del Profesional",
-        "Profesión propuesta",
-        "Profesión indicada en las bases",
-        "¿Cumple la profesión?",
-        "Folio del certificado",
-        "Cargo de las experiencias propuestas",
-        "Cargos válidos según bases",
-        "¿Cumple el cargo?",
-        "Actividades señaladas en el certificado",
-        "Cargos válidos según bases",      # repetido intencional para comparacion visual
-        "¿Actividades coinciden con el cargo?",
-        "Proyecto o experiencia propuesta",
-        "Obra o proyecto válido según bases",
-        "¿Cumple el proyecto/obra?",
-        "Fecha de término",
-        "¿No indica fecha o dice ACTUALIDAD?",
-        "Tipo de obra (certificado)",
-        "Tipos de obra solicitados (bases)",
-        "¿Cumple tipo de obra?",
-        "Tipo de intervención (certificado)",
-        "Tipo de intervención (bases)",
-        "¿Cumple tipo de intervención?",
-        "Acredita complejidad",
-        "¿Término dentro de los últimos 25 años?",
+        "Col 1: Cargo en el proyecto o OBRA",
+        "Col 2: Nombre del Profesional",
+        "Col 3: Profesión propuesta",
+        "Col 4: Profesión indicada en las bases",
+        "Col 5: ¿Cumple la profesión?",
+        "Col 6: Folio del certificado",
+        "Col 7: Cargo de las experiencias propuestas",
+        "Col 8: Cargos válidos según bases",
+        "Col 9: ¿Cumple el cargo?",
+        "Col 10: Actividades señaladas en el certificado",
+        "Col 11: Cargos válidos según bases",          # repetido intencional
+        "Col 12: ¿Actividades coinciden con el cargo?",
+        "Col 13: Proyecto o experiencia propuesta",
+        "Col 14: Obra o proyecto válido según bases",
+        "Col 15: ¿Cumple el proyecto/obra?",
+        "Col 16: Fecha de término",
+        "Col 17: ¿No indica fecha o dice ACTUALIDAD?",
+        "Col 18: Tipo de obra (certificado)",
+        "Col 19: Tipos de obra solicitados (bases)",
+        "Col 20: ¿Cumple tipo de obra?",
+        "Col 21: Tipo de intervención (certificado)",
+        "Col 22: Tipo de intervención (bases)",
+        "Col 23: ¿Cumple tipo de intervención?",
+        "Col 24: Acredita complejidad",
+        "Col 25: ¿Término dentro de los últimos 25 años?",
     ]
     _aplicar_header(ws, headers)
     _set_column_widths(
