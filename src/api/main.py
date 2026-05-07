@@ -1625,6 +1625,105 @@ async def evaluate_job(
     }
 
 
+@app.post("/api/jobs/{extraction_job_id}/cruce-sunat", tags=["Evaluation"])
+async def cruce_sunat_job(extraction_job_id: str):
+    """
+    Cruza las experiencias de un job de extracción contra SUNAT.
+
+    Para cada experiencia con RUC declarado:
+      - consulta SUNAT (cacheada por RUC durante el proceso)
+      - detecta ALT04 si la empresa se inscribió después del inicio de
+        experiencia (señal crítica)
+      - detecta empresas en BAJA (observación)
+
+    Devuelve estructura JSON con:
+      - cruces: lista detallada por experiencia con datos SUNAT y señales
+      - rucs_consultados / rucs_encontrados / rucs_no_encontrados
+      - total_senales / total_alt04
+    """
+    from datetime import date as _date
+    from src.extraction.models import Experience
+    from src.extraction.llm_extractor import _parsear_fecha
+    from src.validation.cruce_sunat import cruzar_experiencias
+
+    # Cargar job
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, job_type, status, result, filename FROM jobs WHERE id = %s",
+                (extraction_job_id,),
+            )
+            ext_row = cur.fetchone()
+
+    if not ext_row:
+        raise HTTPException(404, f"Job {extraction_job_id} no encontrado")
+    if ext_row["status"] != "done":
+        raise HTTPException(
+            400, f"Job no esta completado (status={ext_row['status']})"
+        )
+
+    ext_result = ext_row["result"]
+    if isinstance(ext_result, str):
+        ext_result = json.loads(ext_result)
+
+    # Reconstruir experiencias desde el JSON del job
+    def _try_iso_or_parse(iso_str, raw_str):
+        if iso_str and isinstance(iso_str, str):
+            try:
+                return _date.fromisoformat(iso_str)
+            except ValueError:
+                pass
+        return _parsear_fecha(raw_str)
+
+    experiencias: list[Experience] = []
+    for sec in ext_result.get("secciones", []):
+        prof_data = sec.get("profesional") or {}
+        nombre = prof_data.get("nombre") or f"(sin nombre - {sec['cargo']})"
+        for exp_data in sec.get("experiencias", []):
+            start = _try_iso_or_parse(
+                exp_data.get("fecha_inicio_parsed"), exp_data.get("fecha_inicio")
+            )
+            end = _try_iso_or_parse(
+                exp_data.get("fecha_fin_parsed"), exp_data.get("fecha_fin")
+            )
+            cert = _try_iso_or_parse(
+                exp_data.get("fecha_emision_parsed"), exp_data.get("fecha_emision")
+            )
+
+            exp = Experience(
+                professional_name=nombre,
+                dni=prof_data.get("dni"),
+                project_name=exp_data.get("proyecto"),
+                role=exp_data.get("cargo"),
+                company=exp_data.get("empresa_emisora"),
+                ruc=exp_data.get("ruc"),
+                start_date=start,
+                end_date=end,
+                cert_issue_date=cert,
+                folio=exp_data.get("folio"),
+                cui=exp_data.get("cui") or exp_data.get("codigo_cui") or None,
+                infoobras_code=exp_data.get("infoobras_code"),
+                signer=exp_data.get("firmante"),
+                raw_text="",
+                source_file="db",
+                tipo_obra=exp_data.get("tipo_obra"),
+                tipo_intervencion=exp_data.get("tipo_intervencion"),
+                tipo_acreditacion=exp_data.get("tipo_acreditacion"),
+                cargo_firmante=exp_data.get("cargo_firmante"),
+            )
+            experiencias.append(exp)
+
+    # Cruzar contra SUNAT (usa cache proceso-wide)
+    resultado = cruzar_experiencias(experiencias)
+
+    return {
+        "ok": True,
+        "extraction_job_id": extraction_job_id,
+        "total_experiencias": len(experiencias),
+        **resultado.to_dict(),
+    }
+
+
 @app.get("/api/jobs/{job_id}/log", tags=["Jobs"])
 async def get_job_log(job_id: str):
     """
