@@ -335,7 +335,7 @@ def _write_bd_experiencias(
 ) -> None:
     """
     Base de datos de todas las experiencias declaradas (Paso 3).
-    30 columnas con alertas embebidas en lenguaje natural.
+    27 columnas (mismo layout que el Lircay original).
     """
     ws = wb.create_sheet("BD_EXPERIENCIAS")
     headers = [
@@ -359,22 +359,19 @@ def _write_bd_experiencias(
         "Col 18: Firma el certificado",
         "Col 19: Cargo del firmante",
         "Col 20: ALERTA no representante",
-        "Col 21: Fecha creación (SUNAT)",             # N/A por ahora
+        "Col 21: Fecha creación (SUNAT)",             # ALT04
         "Col 22: ALERTA creación",                    # ALT04
         "Col 23: ALERTA > 25 años",                   # ALT03 (cliente actualizo de 20 a 25)
         "Col 24: Documento presentado",
         "Col 25: Código CUI / CIU",
         "Col 26: Código InfoObras",
         "Col 27: Fecha creación y ALERTA",
-        "Col 28: Otras alertas (lenguaje natural)",
-        "Col 29: Cargo postulado",
-        "Col 30: Profesión propuesta",
     ]
     _aplicar_header(ws, headers)
     _set_column_widths(
         ws,
         [30, 18, 40, 28, 36, 14, 14, 22, 14, 14, 30, 12, 12, 22, 14, 35,
-         12, 28, 22, 35, 14, 35, 35, 22, 16, 16, 22, 40, 30, 25],
+         12, 28, 22, 35, 14, 35, 35, 22, 16, 16, 22],
     )
 
     # Calcular acumulados por profesional (suma de anos_decimal)
@@ -487,20 +484,9 @@ def _write_bd_experiencias(
             ws.cell(row=fila, column=26, value=exp.infoobras_code or "")
             # Col 27 — fecha creacion + alerta combinada (vacio por ahora)
             ws.cell(row=fila, column=27, value="")
-            # Col 28 — todas las otras alertas en texto
-            otras_codigos = {
-                AlertCode.PERIODO_COVID, AlertCode.FIN_DESPUES_EMISION,
-                AlertCode.EMPRESA_POST_EXPERIENCIA, AlertCode.MAS_25_ANOS,
-            }
-            otras = [a.description for a in alertas if a.code not in otras_codigos and a.description]
-            ws.cell(row=fila, column=28, value=" | ".join(otras))
-            # Col 29 — cargo postulado
-            ws.cell(row=fila, column=29, value=ev.cargo_postulado or rp.profesional.role or "")
-            # Col 30 — profesion propuesta
-            ws.cell(row=fila, column=30, value=ev.profesion_propuesta or prof.profession or "")
 
             # Estilos
-            for col in range(1, 31):
+            for col in range(1, 28):
                 c = ws.cell(row=fila, column=col)
                 c.alignment = _CELL_ALIGN_TOP
                 c.border = _BORDER
