@@ -73,7 +73,7 @@ ocr_output/{pdf}/*_profesionales_*.md  +  *_texto_*.md
         ↓
 [scraping]
   → InfoObras: búsqueda por nombre proyecto → CUI → estado, suspensiones
-  → SUNAT: verificación manual (tiene CAPTCHA, no se automatiza)
+  → SUNAT: scraping automático por RUC → fecha_inscripcion, fecha_inicio_actividades (ALT04)
   → Colegios profesionales: verificación manual (CIP, CAP, CBP, etc.)
   CUIs no encontrados automáticamente → UI pide confirmación humana
         ↓
@@ -187,7 +187,7 @@ Suma días efectivos descontando paralizaciones, suspensiones y COVID (16/03/202
 - ALT01: Fecha fin > fecha emisión certificado
 - ALT02: Periodo COVID (16/03/2020–31/12/2021)
 - ALT03: Experiencia > **25 años** desde fecha de propuesta (actualizado 18-abr-2026, antes 20)
-- ALT04: Empresa emisora constituida después del inicio de experiencia (verificación manual SUNAT)
+- ALT04: Empresa emisora constituida después del inicio de experiencia (automatizable vía `src/scraping/sunat.py::consultar_ruc` — integración pendiente con `validation/rules.py`)
 - ALT05: Certificado sin fecha de término ("a la fecha")
 - ALT06: Cargo no válido según bases
 - ALT07: Profesión no coincide con la requerida
@@ -203,7 +203,7 @@ Suma días efectivos descontando paralizaciones, suspensiones y COVID (16/03/202
 
 ## Scraping
 - **InfoObras** (Contraloría): búsqueda por nombre → CUI → estado, avances, suspensiones, actas. Sin CAPTCHA, funciona con `requests`.
-- **SUNAT**: verificación manual por el evaluador en https://e-consultaruc.sunat.gob.pe (tiene CAPTCHA, no se automatiza).
+- **SUNAT**: scraping automático directo (`src/scraping/sunat.py`). El "reCAPTCHA" del portal público es un stub que acepta cualquier token de 52 chars random. Devuelve `fecha_inscripcion` y `fecha_inicio_actividades` (necesarios para ALT04). Solo `requests` + regex. Función pública: `consultar_ruc(ruc) -> EmpresaSUNAT | None`.
 - **Colegios profesionales** (CIP, CAP, CBP, CMP, etc.): verificación manual por el evaluador. Cada colegio tiene su propio portal — no se automatiza.
 
 ### Desambiguación de resultados InfoObras
