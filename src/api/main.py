@@ -1713,8 +1713,9 @@ async def cruce_sunat_job(extraction_job_id: str):
             )
             experiencias.append(exp)
 
-    # Cruzar contra SUNAT (usa cache proceso-wide)
-    resultado = cruzar_experiencias(experiencias)
+    # Cruzar contra SUNAT — pasa conn para usar cache persistente (TTL 30d/1d)
+    with _get_conn() as conn:
+        resultado = cruzar_experiencias(experiencias, conn=conn)
 
     return {
         "ok": True,

@@ -1,36 +1,58 @@
 """
-Cruce de experiencias declaradas contra SUNAT — automatiza ALT04.
+Cruce de experiencias declaradas contra SUNAT — automatiza ALT04 y otras alertas.
 
-Detecta cuando una empresa emisora se inscribió en SUNAT *después* del
-inicio de la experiencia declarada. Una empresa que no existía todavía
-no podía haber emitido un certificado válido.
+Cubre los siguientes casos:
 
-Para cada experiencia con RUC:
-  1. consulta SUNAT (cacheada por RUC durante el cruce)
-  2. compara `fecha_inscripcion` con `experience.start_date`
-  3. si fecha_inscripcion > start_date → señal ALT04 (severidad: critica)
+  Caso 1 — RUC declarado válido:
+    1.1 Lookup directo (con cache DB persistente, TTL 30d).
+    1.2 ALT04 si fecha_inscripcion > start_date.
+    1.3 Fuzzy match nombre_declarado vs razon_social_sunat:
+        - score < 70  → MISMATCH_NOMBRE_RUC (crítica): el RUC declarado pertenece
+                        a otra empresa (typo o fraude).
+        - 70 ≤ score < 85 → NOMBRE_DIFERENTE (observación): nombres difieren
+                            parcialmente, verificar.
+        - score ≥ 85 → match silencioso, no genera señal.
+    1.4 EMPRESA_BAJA si SUNAT marca estado de baja.
 
-También genera señales de menor severidad:
-  - SIN_RUC: experiencia sin RUC declarado (no cruzable)
-  - RUC_NO_ENCONTRADO: SUNAT no devolvió detalle parseable
-  - EMPRESA_BAJA: empresa emisora figura en estado BAJA
+  Caso 2 — Sin RUC pero con nombre:
+    2.1 buscar_por_razon_social → lista de candidatos.
+    2.2 Ranking por fuzzy contra el nombre declarado.
+    2.3 Si el mejor candidato supera score 85 y la diferencia con el segundo
+        es ≥ 5 puntos → match único confiable, se usa su RUC.
+    2.4 Si hay empate cercano → AMBIGUO_REQUIERE_HUMANO con candidatos.
+    2.5 Si nadie supera score 70 → NO_ENCONTRADO_POR_NOMBRE.
 
-Pensado para invocarse desde un endpoint dedicado (`/cruce-sunat`) o
-embebido en el flujo `/evaluate`. El cache se pasa por parámetro para
-poder compartirlo con otros llamadores (p.ej. el endpoint de cruce
-InfoObras también podría enriquecerse con datos SUNAT).
+  Caso 3 — Ni RUC ni nombre → SIN_DATOS_EMPRESA.
+
+Configurable via env:
+  SUNAT_FUZZY_THRESHOLD_CRITICAL  (default 70)
+  SUNAT_FUZZY_THRESHOLD_WARNING   (default 85)
+  SUNAT_AMBIGUO_DELTA             (default 5)  — diferencia mínima entre top1 y top2
+  SUNAT_CACHE_TTL_DAYS            (default 30)
+  SUNAT_NEG_CACHE_TTL_DAYS        (default 1)
 """
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from typing import Any, Optional
 
 from src.extraction.models import Experience
-from src.scraping.sunat import EmpresaSUNAT, consultar_ruc
+from src.scraping import sunat_cache
+from src.scraping.sunat import (
+    EmpresaSUNAT,
+    buscar_por_razon_social,
+    consultar_ruc,
+    score_match_empresa,
+)
 
 logger = logging.getLogger(__name__)
+
+THRESHOLD_CRITICAL = int(os.getenv("SUNAT_FUZZY_THRESHOLD_CRITICAL", "70"))
+THRESHOLD_WARNING = int(os.getenv("SUNAT_FUZZY_THRESHOLD_WARNING", "85"))
+AMBIGUO_DELTA = int(os.getenv("SUNAT_AMBIGUO_DELTA", "5"))
 
 
 # ---------------------------------------------------------------------------
@@ -39,28 +61,42 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SenalCruceSUNAT:
-    """Una señal generada por el cruce SUNAT (una alerta o nota)."""
+    """Una señal generada por el cruce SUNAT."""
     severidad: str  # "critica" | "observacion" | "informativa"
-    codigo: str     # "ALT04" | "RUC_NO_ENCONTRADO" | "EMPRESA_BAJA" | "SIN_RUC"
+    codigo: str
     mensaje: str
+
+
+@dataclass
+class CandidatoEmpresa:
+    """Un candidato resultante de buscar_por_razon_social."""
+    ruc: str
+    razon_social: str
+    score: int  # 0-100, fuzzy match contra el nombre declarado
+    estado: Optional[str] = None
+    ubicacion: Optional[str] = None
 
 
 @dataclass
 class ResultadoCruceExperienciaSUNAT:
     """Resultado del cruce de UNA experiencia con SUNAT."""
     profesional: str
-    empresa: Optional[str]
-    ruc: Optional[str]
+    empresa_declarada: Optional[str]
+    ruc_declarado: Optional[str]
+    ruc_resuelto: Optional[str]  # puede ser != ruc_declarado si vino por fallback
     proyecto: Optional[str]
     fecha_inicio_exp: Optional[date]
     empresa_sunat: Optional[EmpresaSUNAT] = None
+    score_match_nombre: Optional[int] = None  # 0-100
+    candidatos_ambiguos: list[CandidatoEmpresa] = field(default_factory=list)
     senales: list[SenalCruceSUNAT] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "profesional": self.profesional,
-            "empresa": self.empresa,
-            "ruc": self.ruc,
+            "empresa_declarada": self.empresa_declarada,
+            "ruc_declarado": self.ruc_declarado,
+            "ruc_resuelto": self.ruc_resuelto,
             "proyecto": self.proyecto,
             "fecha_inicio_exp": (
                 self.fecha_inicio_exp.isoformat() if self.fecha_inicio_exp else None
@@ -68,6 +104,8 @@ class ResultadoCruceExperienciaSUNAT:
             "empresa_sunat": (
                 self.empresa_sunat.to_dict() if self.empresa_sunat else None
             ),
+            "score_match_nombre": self.score_match_nombre,
+            "candidatos_ambiguos": [asdict(c) for c in self.candidatos_ambiguos],
             "senales": [asdict(s) for s in self.senales],
         }
 
@@ -76,36 +114,27 @@ class ResultadoCruceExperienciaSUNAT:
 class ResultadoCruceJobSUNAT:
     """Resultado consolidado del cruce de un job completo."""
     cruces: list[ResultadoCruceExperienciaSUNAT]
-    rucs_consultados: int
-    rucs_encontrados: int
+    rucs_consultados: int          # llamadas live a SUNAT
+    rucs_servidos_de_cache: int    # cache hits
+    rucs_encontrados: int          # con datos válidos al final
     rucs_no_encontrados: list[str]
     total_senales: int
     total_alt04: int
+    total_mismatches: int  # MISMATCH_NOMBRE_RUC
+    total_ambiguos: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "cruces": [c.to_dict() for c in self.cruces],
             "rucs_consultados": self.rucs_consultados,
+            "rucs_servidos_de_cache": self.rucs_servidos_de_cache,
             "rucs_encontrados": self.rucs_encontrados,
             "rucs_no_encontrados": self.rucs_no_encontrados,
             "total_senales": self.total_senales,
             "total_alt04": self.total_alt04,
+            "total_mismatches": self.total_mismatches,
+            "total_ambiguos": self.total_ambiguos,
         }
-
-
-# ---------------------------------------------------------------------------
-# Cache
-# ---------------------------------------------------------------------------
-
-# Cache en memoria proceso-wide (FastAPI worker). Sobrevive entre requests
-# pero se pierde al reiniciar el server. Los datos SUNAT cambian muy poco,
-# así que persistir en SQLite con TTL 30d sería el siguiente paso.
-_CACHE_PROCESO: dict[str, Optional[EmpresaSUNAT]] = {}
-
-
-def limpiar_cache() -> None:
-    """Borra el cache proceso-wide. Para tests o recargas manuales."""
-    _CACHE_PROCESO.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +142,141 @@ def limpiar_cache() -> None:
 # ---------------------------------------------------------------------------
 
 def _normalizar_ruc(ruc: Optional[str]) -> Optional[str]:
-    """Devuelve el RUC limpio (11 dígitos) o None si no es válido."""
     if not ruc:
         return None
     digits = "".join(c for c in str(ruc) if c.isdigit())
     return digits if len(digits) == 11 else None
+
+
+def _aplicar_match_nombre(
+    cruce: ResultadoCruceExperienciaSUNAT,
+    nombre_declarado: Optional[str],
+    empresa: EmpresaSUNAT,
+) -> int:
+    """
+    Calcula score y genera señales de match nombre↔RUC.
+    Devuelve el score (0-100). Modifica cruce in-place.
+    """
+    if not nombre_declarado or not empresa.razon_social:
+        return -1  # No comparable
+
+    score = score_match_empresa(nombre_declarado, empresa.razon_social)
+    cruce.score_match_nombre = score
+
+    if score < THRESHOLD_CRITICAL:
+        cruce.senales.append(SenalCruceSUNAT(
+            severidad="critica",
+            codigo="MISMATCH_NOMBRE_RUC",
+            mensaje=(
+                f"RUC {empresa.ruc} corresponde a '{empresa.razon_social}' "
+                f"pero el certificado declara '{nombre_declarado}' "
+                f"(similitud: {score}/100). El RUC declarado no coincide con "
+                f"la empresa nombrada."
+            ),
+        ))
+    elif score < THRESHOLD_WARNING:
+        cruce.senales.append(SenalCruceSUNAT(
+            severidad="observacion",
+            codigo="NOMBRE_DIFERENTE",
+            mensaje=(
+                f"Nombre declarado '{nombre_declarado}' y razon social SUNAT "
+                f"'{empresa.razon_social}' difieren parcialmente "
+                f"(similitud: {score}/100)"
+            ),
+        ))
+    return score
+
+
+def _check_alt04(
+    cruce: ResultadoCruceExperienciaSUNAT,
+    empresa: EmpresaSUNAT,
+    fecha_inicio_exp: Optional[date],
+) -> bool:
+    """Genera señal ALT04 si aplica. Devuelve True si se disparó."""
+    if (
+        empresa.fecha_inscripcion is None
+        or fecha_inicio_exp is None
+        or empresa.fecha_inscripcion <= fecha_inicio_exp
+    ):
+        return False
+
+    cruce.senales.append(SenalCruceSUNAT(
+        severidad="critica",
+        codigo="ALT04",
+        mensaje=(
+            f"Empresa '{empresa.razon_social or empresa.ruc}' "
+            f"se inscribio en SUNAT el {empresa.fecha_inscripcion:%d/%m/%Y}, "
+            f"posterior al inicio de la experiencia declarada "
+            f"({fecha_inicio_exp:%d/%m/%Y})"
+        ),
+    ))
+    return True
+
+
+def _check_estado_baja(
+    cruce: ResultadoCruceExperienciaSUNAT,
+    empresa: EmpresaSUNAT,
+) -> None:
+    if empresa.estado and "BAJA" in empresa.estado.upper():
+        cruce.senales.append(SenalCruceSUNAT(
+            severidad="observacion",
+            codigo="EMPRESA_BAJA",
+            mensaje=f"Empresa emisora figura como '{empresa.estado}' en SUNAT",
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Lookup con cache (DB + memoria)
+# ---------------------------------------------------------------------------
+
+class _LookupContext:
+    """Encapsula estado del cruce: cache en memoria + conexion DB opcional."""
+
+    def __init__(self, conn=None):
+        self.conn = conn
+        self.cache_memoria: dict[str, Optional[EmpresaSUNAT]] = {}
+        self.consultas_live = 0
+        self.cache_hits = 0
+        if conn is not None:
+            try:
+                sunat_cache.init_table(conn)
+            except Exception as exc:
+                logger.warning("No se pudo inicializar tabla sunat_cache: %s", exc)
+                self.conn = None
+
+    def lookup_ruc(self, ruc: str) -> Optional[EmpresaSUNAT]:
+        # Memoria
+        if ruc in self.cache_memoria:
+            return self.cache_memoria[ruc]
+
+        # DB cache
+        if self.conn is not None:
+            try:
+                hit, empresa = sunat_cache.get(self.conn, ruc)
+                if hit:
+                    self.cache_memoria[ruc] = empresa
+                    self.cache_hits += 1
+                    return empresa
+            except Exception as exc:
+                logger.warning("Error leyendo cache SUNAT para %s: %s", ruc, exc)
+
+        # Live SUNAT
+        try:
+            empresa = consultar_ruc(ruc)
+        except Exception as exc:
+            logger.warning("Error consultando SUNAT para RUC %s: %s", ruc, exc)
+            empresa = None
+
+        self.cache_memoria[ruc] = empresa
+        self.consultas_live += 1
+
+        if self.conn is not None:
+            try:
+                sunat_cache.set(self.conn, ruc, empresa)
+            except Exception as exc:
+                logger.warning("Error guardando cache SUNAT para %s: %s", ruc, exc)
+
+        return empresa
 
 
 # ---------------------------------------------------------------------------
@@ -127,110 +286,170 @@ def _normalizar_ruc(ruc: Optional[str]) -> Optional[str]:
 def cruzar_experiencias(
     experiencias: list[Experience],
     *,
-    cache: Optional[dict[str, Optional[EmpresaSUNAT]]] = None,
+    conn=None,
 ) -> ResultadoCruceJobSUNAT:
     """
     Cruza una lista de experiencias contra SUNAT y genera señales.
 
     Args:
         experiencias: lista de Experience del Paso 3.
-        cache: dict {ruc → EmpresaSUNAT|None} compartido. Si None, usa el
-                cache proceso-wide.
+        conn: conexión PostgreSQL opcional. Si se provee, se usa cache
+              persistente en tabla `sunat_cache` (TTL 30d positivo, 1d negativo).
+              Sin conn, solo cache en memoria del proceso.
 
     Returns:
         ResultadoCruceJobSUNAT con cruces detallados y resumen agregado.
     """
-    if cache is None:
-        cache = _CACHE_PROCESO
+    ctx = _LookupContext(conn=conn)
 
     cruces: list[ResultadoCruceExperienciaSUNAT] = []
     rucs_no_encontrados: list[str] = []
-    rucs_consultados_unicos: set[str] = set()
     total_alt04 = 0
+    total_mismatches = 0
+    total_ambiguos = 0
 
     for exp in experiencias:
-        ruc = _normalizar_ruc(exp.ruc)
+        ruc_declarado = _normalizar_ruc(exp.ruc)
         cruce = ResultadoCruceExperienciaSUNAT(
             profesional=exp.professional_name,
-            empresa=exp.company,
-            ruc=ruc,
+            empresa_declarada=exp.company,
+            ruc_declarado=ruc_declarado,
+            ruc_resuelto=ruc_declarado,
             proyecto=exp.project_name,
             fecha_inicio_exp=exp.start_date,
         )
 
-        if not ruc:
+        # ─── Caso 1: tenemos RUC válido ─────────────────────────────────────
+        if ruc_declarado:
+            empresa = ctx.lookup_ruc(ruc_declarado)
+            cruce.empresa_sunat = empresa
+
+            if empresa is None:
+                if ruc_declarado not in rucs_no_encontrados:
+                    rucs_no_encontrados.append(ruc_declarado)
+                cruce.senales.append(SenalCruceSUNAT(
+                    severidad="observacion",
+                    codigo="RUC_NO_ENCONTRADO",
+                    mensaje=(
+                        f"RUC {ruc_declarado} no encontrado en SUNAT "
+                        f"(puede ser RUC invalido o el portal no respondio)"
+                    ),
+                ))
+            else:
+                if _check_alt04(cruce, empresa, exp.start_date):
+                    total_alt04 += 1
+                score = _aplicar_match_nombre(cruce, exp.company, empresa)
+                if score >= 0 and score < THRESHOLD_CRITICAL:
+                    total_mismatches += 1
+                _check_estado_baja(cruce, empresa)
+
+            cruces.append(cruce)
+            continue
+
+        # ─── Caso 2: sin RUC, pero hay nombre ────────────────────────────────
+        if exp.company:
+            try:
+                candidatos_raw = buscar_por_razon_social(exp.company)
+            except Exception as exc:
+                logger.warning(
+                    "Error buscando por razon social '%s': %s", exp.company, exc
+                )
+                candidatos_raw = []
+
+            # Rankear por fuzzy contra el nombre declarado
+            candidatos = sorted([
+                CandidatoEmpresa(
+                    ruc=c["ruc"],
+                    razon_social=c.get("razon_social", ""),
+                    score=score_match_empresa(exp.company, c.get("razon_social", "")),
+                    estado=c.get("estado"),
+                    ubicacion=c.get("ubicacion"),
+                )
+                for c in candidatos_raw
+            ], key=lambda c: c.score, reverse=True)
+
+            if not candidatos or candidatos[0].score < THRESHOLD_CRITICAL:
+                cruce.senales.append(SenalCruceSUNAT(
+                    severidad="observacion",
+                    codigo="NO_ENCONTRADO_POR_NOMBRE",
+                    mensaje=(
+                        f"No se encontro empresa parecida a '{exp.company}' en SUNAT"
+                        f" (busqueda devolvio {len(candidatos)} resultados, "
+                        f"mejor score: {candidatos[0].score if candidatos else 0})"
+                    ),
+                ))
+                cruces.append(cruce)
+                continue
+
+            top1 = candidatos[0]
+
+            # ¿Top1 es claramente mejor que top2?
+            top2_score = candidatos[1].score if len(candidatos) >= 2 else 0
+            es_ambiguo = (
+                top1.score < THRESHOLD_WARNING
+                or (top1.score - top2_score) < AMBIGUO_DELTA
+            )
+
+            if es_ambiguo:
+                cruce.candidatos_ambiguos = candidatos[:5]  # top 5 para UI
+                cruce.senales.append(SenalCruceSUNAT(
+                    severidad="observacion",
+                    codigo="AMBIGUO_REQUIERE_HUMANO",
+                    mensaje=(
+                        f"Multiples candidatos para '{exp.company}': "
+                        f"top score={top1.score} ({top1.razon_social}), "
+                        f"requiere confirmacion humana"
+                    ),
+                ))
+                total_ambiguos += 1
+                cruces.append(cruce)
+                continue
+
+            # Match único confiable → consultar el RUC del top1
+            empresa = ctx.lookup_ruc(top1.ruc)
+            cruce.empresa_sunat = empresa
+            cruce.ruc_resuelto = top1.ruc
+            cruce.score_match_nombre = top1.score
+
             cruce.senales.append(SenalCruceSUNAT(
                 severidad="informativa",
-                codigo="SIN_RUC",
-                mensaje="Experiencia sin RUC declarado — no se puede cruzar con SUNAT",
+                codigo="RUC_INFERIDO_POR_NOMBRE",
+                mensaje=(
+                    f"RUC {top1.ruc} inferido por fuzzy match "
+                    f"(score: {top1.score}/100) — el certificado no lo declaraba"
+                ),
             ))
+
+            if empresa:
+                if _check_alt04(cruce, empresa, exp.start_date):
+                    total_alt04 += 1
+                _check_estado_baja(cruce, empresa)
+
             cruces.append(cruce)
             continue
 
-        # Lookup cacheado
-        if ruc not in cache:
-            try:
-                cache[ruc] = consultar_ruc(ruc)
-            except Exception as exc:
-                logger.warning("Error consultando SUNAT para RUC %s: %s", ruc, exc)
-                cache[ruc] = None
-            rucs_consultados_unicos.add(ruc)
-
-        empresa = cache[ruc]
-        cruce.empresa_sunat = empresa
-
-        if empresa is None:
-            if ruc not in rucs_no_encontrados:
-                rucs_no_encontrados.append(ruc)
-            cruce.senales.append(SenalCruceSUNAT(
-                severidad="observacion",
-                codigo="RUC_NO_ENCONTRADO",
-                mensaje=(
-                    f"RUC {ruc} no encontrado en SUNAT "
-                    f"(puede ser RUC invalido o el portal no respondio)"
-                ),
-            ))
-            cruces.append(cruce)
-            continue
-
-        # ALT04: empresa inscrita despues del inicio de experiencia
-        if (
-            empresa.fecha_inscripcion is not None
-            and exp.start_date is not None
-            and empresa.fecha_inscripcion > exp.start_date
-        ):
-            cruce.senales.append(SenalCruceSUNAT(
-                severidad="critica",
-                codigo="ALT04",
-                mensaje=(
-                    f"Empresa '{empresa.razon_social or exp.company}' "
-                    f"se inscribio en SUNAT el "
-                    f"{empresa.fecha_inscripcion:%d/%m/%Y}, "
-                    f"posterior al inicio de la experiencia declarada "
-                    f"({exp.start_date:%d/%m/%Y})"
-                ),
-            ))
-            total_alt04 += 1
-
-        # Empresa en BAJA → observacion (no critica)
-        if empresa.estado and "BAJA" in empresa.estado.upper():
-            cruce.senales.append(SenalCruceSUNAT(
-                severidad="observacion",
-                codigo="EMPRESA_BAJA",
-                mensaje=(
-                    f"Empresa emisora figura como '{empresa.estado}' en SUNAT"
-                ),
-            ))
-
+        # ─── Caso 3: ni RUC ni nombre ────────────────────────────────────────
+        cruce.senales.append(SenalCruceSUNAT(
+            severidad="informativa",
+            codigo="SIN_DATOS_EMPRESA",
+            mensaje="Experiencia sin RUC ni nombre de empresa — no se puede cruzar",
+        ))
         cruces.append(cruce)
 
     total_senales = sum(len(c.senales) for c in cruces)
+    rucs_encontrados = sum(
+        1 for c in cruces
+        if c.empresa_sunat is not None and c.empresa_sunat.razon_social
+    )
 
     return ResultadoCruceJobSUNAT(
         cruces=cruces,
-        rucs_consultados=len(rucs_consultados_unicos),
-        rucs_encontrados=len(rucs_consultados_unicos) - len(rucs_no_encontrados),
+        rucs_consultados=ctx.consultas_live,
+        rucs_servidos_de_cache=ctx.cache_hits,
+        rucs_encontrados=rucs_encontrados,
         rucs_no_encontrados=rucs_no_encontrados,
         total_senales=total_senales,
         total_alt04=total_alt04,
+        total_mismatches=total_mismatches,
+        total_ambiguos=total_ambiguos,
     )

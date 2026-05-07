@@ -30,11 +30,17 @@ import json
 import logging
 import re
 import secrets
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any, Optional
 
 import requests
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:  # rapidfuzz es opcional para los tests; en prod debe instalarse
+    fuzz = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,80 @@ class EmpresaSUNAT:
         # raw queda fuera del dump por defecto (ruidoso)
         d.pop("raw", None)
         return d
+
+
+# ============================================================================
+# Normalización y fuzzy match de nombres de empresa
+# ============================================================================
+
+# Sufijos legales que aparecen al final del nombre y deben quitarse para
+# comparar nombres "INSTITUTO DE CONSULTORIA" vs "INSTITUTO DE CONSULTORIA S.A."
+_SUFIJOS_LEGALES_RE = re.compile(
+    r"\b(?:"
+    r"S\.?\s?A\.?\s?C\.?|"   # S.A.C. / SAC / S A C
+    r"S\.?\s?A\.?\s?A\.?|"   # S.A.A.
+    r"S\.?\s?A\.?|"           # S.A. / SA
+    r"E\.?\s?I\.?\s?R\.?\s?L\.?|"  # E.I.R.L.
+    r"S\.?\s?R\.?\s?L\.?|"   # S.R.L.
+    r"S\.?\s?C\.?\s?R\.?\s?L\.?|"  # S.C.R.L.
+    r"LTDA|LIMITADA|"
+    r"SOCIEDAD\s+ANONIMA(?:\s+CERRADA|\s+ABIERTA)?|"
+    r"EMPRESA\s+INDIVIDUAL\s+DE\s+RESPONSABILIDAD\s+LIMITADA"
+    r")\b\.?",
+    re.IGNORECASE,
+)
+
+
+def normalizar_nombre_empresa(s: str) -> str:
+    """
+    Normaliza un nombre de empresa para comparación fuzzy.
+
+    Aplica:
+      1. Strip de acentos (Ñ → N, á → a, etc.)
+      2. Eliminación de sufijos legales (S.A., S.A.C., E.I.R.L., etc.)
+      3. Eliminación de puntuación y símbolos
+      4. Colapso de whitespace
+      5. UPPERCASE
+
+    Ejemplos:
+      "INSTITUTO DE CONSULTORÍA S.A.C." → "INSTITUTO DE CONSULTORIA"
+      "INDECONSULT  E.I.R.L."           → "INDECONSULT"
+    """
+    if not s:
+        return ""
+    # Quitar acentos
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    # Quitar sufijos legales
+    s = _SUFIJOS_LEGALES_RE.sub("", s)
+    # Quitar puntuación que no sea letra/número/espacio
+    s = re.sub(r"[^\w\s]", " ", s)
+    # Colapsar whitespace y uppercase
+    s = re.sub(r"\s+", " ", s).strip().upper()
+    return s
+
+
+def score_match_empresa(declarado: str, sunat: str) -> int:
+    """
+    Compara dos nombres de empresa con fuzzy matching.
+
+    Returns:
+        Score 0-100. Interpretación recomendada:
+          ≥ 85: match fuerte (misma empresa, posible diferencia de sufijo)
+          70-84: match parcial (probablemente misma pero verificar)
+          < 70: mismatch (probablemente empresas distintas o RUC declarado mal)
+
+    Si rapidfuzz no está disponible, devuelve 100 si los strings normalizados
+    son iguales y 0 si no — degradación elegante.
+    """
+    norm_decl = normalizar_nombre_empresa(declarado or "")
+    norm_sunat = normalizar_nombre_empresa(sunat or "")
+    if not norm_decl or not norm_sunat:
+        return 0
+    if fuzz is None:
+        return 100 if norm_decl == norm_sunat else 0
+    # token_sort_ratio maneja bien orden distinto y palabras extra
+    return int(fuzz.token_sort_ratio(norm_decl, norm_sunat))
 
 
 # ============================================================================

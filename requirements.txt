@@ -15,6 +15,7 @@ PyMuPDF>=1.24            # fitz: render de páginas PDF → imagen para qwen_vl_
 # ── Extracción: profesionales y experiencias (Pasos 2-3) ────────────────────
 requests>=2.31           # llamadas HTTP a Ollama + scraping
 json-repair>=0.30        # reparación agresiva de JSON malformado del LLM
+rapidfuzz>=3.0           # fuzzy matching para validación cruzada nombre↔RUC SUNAT
 
 # ── Reporting ────────────────────────────────────────────────────────────────
 openpyxl>=3.1            # generación de Excel
