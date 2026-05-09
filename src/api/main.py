@@ -1584,7 +1584,42 @@ async def evaluate_job(
             )
             experiencias.append(exp)
 
-    # Ejecutar Paso 4
+    # ─── Cruce SUNAT (best-effort, antes del Paso 4) ────────────────────────
+    # Si SUNAT responde, alimentamos sunat_dates al motor de reglas (ALT04)
+    # y sunat_por_ruc al writer (cols 21/22/27 de BD_EXPERIENCIAS).
+    # Si SUNAT falla, degradamos elegantemente: el Excel se genera sin esa data.
+    sunat_dates: dict[str, _date] = {}
+    sunat_por_ruc: dict = {}
+    cruce_sunat_meta = {"rucs_consultados": 0, "rucs_servidos_de_cache": 0,
+                         "rucs_encontrados": 0, "total_alt04": 0}
+    try:
+        from src.validation.cruce_sunat import cruzar_experiencias as _cruzar_sunat
+        with _get_conn() as conn:
+            resultado_sunat = _cruzar_sunat(experiencias, conn=conn)
+        cruce_sunat_meta.update({
+            "rucs_consultados": resultado_sunat.rucs_consultados,
+            "rucs_servidos_de_cache": resultado_sunat.rucs_servidos_de_cache,
+            "rucs_encontrados": resultado_sunat.rucs_encontrados,
+            "total_alt04": resultado_sunat.total_alt04,
+        })
+        for cruce in resultado_sunat.cruces:
+            empresa = cruce.empresa_sunat
+            if not empresa:
+                continue
+            # Indexar por ruc_resuelto (puede diferir del declarado tras fallback)
+            ruc_key = cruce.ruc_resuelto or cruce.ruc_declarado
+            if ruc_key:
+                sunat_por_ruc[ruc_key] = empresa
+                # ALT04 usa fecha_inicio_actividades (cuando la empresa empezo
+                # a operar), no fecha_inscripcion (puede ser previa)
+                if empresa.fecha_inicio_actividades:
+                    sunat_dates[ruc_key] = empresa.fecha_inicio_actividades
+    except Exception as exc:
+        logger.warning(
+            "Cruce SUNAT fallo en /evaluate (degradacion elegante): %s", exc
+        )
+
+    # ─── Paso 4 (motor de reglas, ahora con datos SUNAT) ───────────────────
     from src.validation.evaluator import evaluar_propuesta
     rtm_personal = tdr_result.get("rtm_personal", [])
 
@@ -1593,20 +1628,22 @@ async def evaluate_job(
         experiencias=experiencias,
         requisitos_rtm=rtm_personal,
         proposal_date=_date.today(),
+        sunat_dates=sunat_dates,
     )
 
-    # Generar Excel
-    from src.reporting.excel_writer import write_report
+    # ─── Generar Excel (formato Lircay con datos SUNAT) ────────────────────
+    from src.reporting.excel_writer_lircay import write_report_lircay
 
     excel_dir = OUTPUT_DIR / extraction_job_id
     excel_dir.mkdir(parents=True, exist_ok=True)
     excel_path = excel_dir / f"evaluacion_{extraction_job_id}.xlsx"
 
-    write_report(
+    write_report_lircay(
         resultados=resultados,
         output_path=excel_path,
         proposal_date=_date.today(),
         filename=ext_row.get("filename", ""),
+        sunat_por_ruc=sunat_por_ruc,
     )
 
     # Resumen
@@ -1622,6 +1659,7 @@ async def evaluate_job(
         "alertas": total_alertas,
         "excel_path": str(excel_path),
         "download_url": f"/api/jobs/{extraction_job_id}/excel",
+        "cruce_sunat": cruce_sunat_meta,
     }
 
 

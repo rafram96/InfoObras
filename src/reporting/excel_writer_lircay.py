@@ -332,11 +332,17 @@ def _write_bd_experiencias(
     wb,
     resultados: list[ResultadoProfesional],
     proposal_date: Optional[date] = None,
+    sunat_por_ruc: Optional[dict] = None,
 ) -> None:
     """
     Base de datos de todas las experiencias declaradas (Paso 3).
     27 columnas (mismo layout que el Lircay original).
+
+    Args:
+        sunat_por_ruc: dict {ruc: EmpresaSUNAT} resultado del cruce SUNAT.
+                       Si se pasa, se usa para llenar Col 21, 22 y 27.
     """
+    sunat_por_ruc = sunat_por_ruc or {}
     ws = wb.create_sheet("BD_EXPERIENCIAS")
     headers = [
         "Col 1: Nombre del Profesional",
@@ -427,7 +433,7 @@ def _write_bd_experiencias(
             ws.cell(row=fila, column=9, value=_fmt_date(exp.start_date))
             ws.cell(row=fila, column=10, value=_fmt_date(exp.end_date) if exp.end_date else "A LA FECHA")
             # Col 11 — alerta COVID
-            covid_alert = _alerta_por_codigo(alertas, AlertCode.PERIODO_COVID)
+            covid_alert = _alerta_por_codigo(alertas, AlertCode.ALT02)
             ws.cell(row=fila, column=11, value=covid_alert)
             if covid_alert:
                 ws.cell(row=fila, column=11).fill = _FILL_AMARILLO
@@ -444,7 +450,7 @@ def _write_bd_experiencias(
             # Col 15 — fecha emision
             ws.cell(row=fila, column=15, value=_fmt_date(exp.cert_issue_date))
             # Col 16 — alerta emision (ALT01)
-            alt_emision = _alerta_por_codigo(alertas, AlertCode.FIN_DESPUES_EMISION)
+            alt_emision = _alerta_por_codigo(alertas, AlertCode.ALT01)
             ws.cell(row=fila, column=16, value=alt_emision)
             if alt_emision:
                 ws.cell(row=fila, column=16).fill = _FILL_ROJO
@@ -465,15 +471,25 @@ def _write_bd_experiencias(
                     value="El firmante no aparece como representante legal de la empresa emisora",
                 )
                 ws.cell(row=fila, column=20).fill = _FILL_AMARILLO
-            # Col 21 — fecha SUNAT (no integrada todavia)
-            ws.cell(row=fila, column=21, value="")
-            # Col 22 — alerta creacion (ALT04)
-            alt_creacion = _alerta_por_codigo(alertas, AlertCode.EMPRESA_POST_EXPERIENCIA)
+            # Col 21 — fecha de inscripcion SUNAT (cruce SUNAT)
+            empresa_sunat = sunat_por_ruc.get(exp.ruc) if exp.ruc else None
+            fecha_inscripcion = (
+                empresa_sunat.fecha_inscripcion if empresa_sunat else None
+            )
+            if fecha_inscripcion:
+                ws.cell(row=fila, column=21, value=_fmt_date(fecha_inscripcion))
+            elif exp.ruc and empresa_sunat is None:
+                # RUC declarado pero SUNAT no devolvio datos
+                ws.cell(row=fila, column=21, value="No encontrado")
+            else:
+                ws.cell(row=fila, column=21, value="")
+            # Col 22 — ALT04: empresa creada despues del inicio de experiencia
+            alt_creacion = _alerta_por_codigo(alertas, AlertCode.ALT04)
             ws.cell(row=fila, column=22, value=alt_creacion)
             if alt_creacion:
-                ws.cell(row=fila, column=22).fill = _FILL_AMARILLO
+                ws.cell(row=fila, column=22).fill = _FILL_ROJO
             # Col 23 — alerta > 25 anos (ALT03)
-            alt_25 = _alerta_por_codigo(alertas, AlertCode.MAS_25_ANOS)
+            alt_25 = _alerta_por_codigo(alertas, AlertCode.ALT03)
             ws.cell(row=fila, column=23, value=alt_25)
             if alt_25:
                 ws.cell(row=fila, column=23).fill = _FILL_ROJO
@@ -482,8 +498,24 @@ def _write_bd_experiencias(
             # Col 25-26 — CUI e InfoObras
             ws.cell(row=fila, column=25, value=exp.cui or "")
             ws.cell(row=fila, column=26, value=exp.infoobras_code or "")
-            # Col 27 — fecha creacion + alerta combinada (vacio por ahora)
-            ws.cell(row=fila, column=27, value="")
+            # Col 27 — texto consolidado: razon social SUNAT + fecha + ALT04 si aplica
+            if empresa_sunat:
+                partes = []
+                if empresa_sunat.razon_social:
+                    partes.append(empresa_sunat.razon_social)
+                if fecha_inscripcion:
+                    partes.append(f"Inscrita: {_fmt_date(fecha_inscripcion)}")
+                if empresa_sunat.estado:
+                    partes.append(f"Estado: {empresa_sunat.estado}")
+                if alt_creacion:
+                    partes.append(f"ALT04: {alt_creacion}")
+                ws.cell(row=fila, column=27, value=" | ".join(partes))
+                if alt_creacion:
+                    ws.cell(row=fila, column=27).fill = _FILL_ROJO
+            elif exp.ruc:
+                ws.cell(row=fila, column=27, value="No disponible (RUC no encontrado en SUNAT)")
+            else:
+                ws.cell(row=fila, column=27, value="No disponible (sin RUC declarado)")
 
             # Estilos
             for col in range(1, 28):
@@ -739,6 +771,7 @@ def write_report_lircay(
     output_path: Path,
     proposal_date: Optional[date] = None,
     filename: str = "",
+    sunat_por_ruc: Optional[dict] = None,
 ) -> Path:
     """
     Genera el Excel con formato Lircay (5 hojas).
@@ -748,6 +781,10 @@ def write_report_lircay(
         output_path: ruta donde guardar el .xlsx.
         proposal_date: fecha de presentacion de la propuesta.
         filename: nombre del archivo PDF original (para mostrar en RESUMEN).
+        sunat_por_ruc: dict {ruc: EmpresaSUNAT} del cruce SUNAT (opcional).
+                       Si se pasa, BD_EXPERIENCIAS llena Col 21/22/27 con
+                       fecha de inscripcion y razon social. Si no se pasa,
+                       esas columnas quedan vacias o con "No disponible".
 
     Returns:
         Path al archivo Excel generado.
@@ -763,7 +800,7 @@ def write_report_lircay(
 
     _write_profesionales(wb, resultados)
     _write_requisitos_tdr(wb, resultados)
-    _write_bd_experiencias(wb, resultados, proposal_date)
+    _write_bd_experiencias(wb, resultados, proposal_date, sunat_por_ruc)
     _write_analisis_rtm(wb, resultados)
     _write_resumen(wb, resultados, proposal_date, filename)
 
