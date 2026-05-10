@@ -58,6 +58,34 @@ _FILL_ROJO = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="so
 _FILL_GRIS = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
 _FILL_AZUL_SUAVE = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
+# Paleta de bandas para agrupar visualmente las filas de cada profesional
+# en BD_EXPERIENCIAS y ANALISIS_RTM. Colores muy claros para no pelearse
+# con los fills de alerta (rojo/amarillo) que sobreescriben donde aplican.
+_PALETA_BANDAS_HEX = [
+    "F0F7FF",  # azul muy claro
+    "FFF8E7",  # crema
+    "F0FFF0",  # verde menta muy claro
+    "FFF0F5",  # rosa muy claro
+    "F5F0FF",  # lavanda muy claro
+    "FFFAF0",  # beige floral
+    "F0FFFF",  # azure
+    "FFFACD",  # lemon chiffon
+    "FAEBD7",  # almendra
+    "E6E6FA",  # lavanda
+]
+
+
+def _color_para_profesional(nombre: str, paleta_idx: dict[str, int]) -> PatternFill:
+    """
+    Devuelve el PatternFill asignado a un profesional. Cicla la paleta
+    en el orden de aparicion del profesional. Si el mismo nombre aparece
+    despues, devuelve el mismo color.
+    """
+    if nombre not in paleta_idx:
+        paleta_idx[nombre] = len(paleta_idx) % len(_PALETA_BANDAS_HEX)
+    color = _PALETA_BANDAS_HEX[paleta_idx[nombre]]
+    return PatternFill(start_color=color, end_color=color, fill_type="solid")
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -354,6 +382,7 @@ def _write_bd_experiencias(
     resultados: list[ResultadoProfesional],
     proposal_date: Optional[date] = None,
     sunat_por_ruc: Optional[dict] = None,
+    paleta_idx: Optional[dict] = None,
 ) -> None:
     """
     Base de datos de todas las experiencias declaradas (Paso 3).
@@ -401,6 +430,12 @@ def _write_bd_experiencias(
          12, 28, 22, 35, 14, 35, 35, 22, 16, 16, 22],
     )
 
+    # Banda de color por profesional. Usa el dict compartido `paleta_idx` si
+    # se paso (para que ANALISIS_RTM use el mismo color por profesional) o
+    # crea uno local sino.
+    if paleta_idx is None:
+        paleta_idx = {}
+
     # Calcular acumulados por profesional (suma de anos_decimal)
     acumulados_por_prof: dict[str, float] = {}
     for rp in resultados:
@@ -424,6 +459,7 @@ def _write_bd_experiencias(
     for rp in resultados:
         prof = rp.profesional
         nombre = prof.name or ""
+        fill_banda = _color_para_profesional(nombre, paleta_idx)
         for ev in rp.evaluaciones:
             exp = ev.experiencia_ref
             if not exp:
@@ -432,6 +468,13 @@ def _write_bd_experiencias(
 
             alertas = list(ev.alertas)
             anos_dec = _anos_decimal(exp.start_date, exp.end_date)
+
+            # Pintar TODAS las celdas de la fila con el color del profesional.
+            # Las alertas (rojo/amarillo) se aplican despues y sobreescriben
+            # donde aplique. Esto agrupa visualmente las filas de cada
+            # profesional sin opacar las senales criticas.
+            for col in range(1, 28):
+                ws.cell(row=fila, column=col).fill = fill_banda
 
             # Col 1
             ws.cell(row=fila, column=1, value=(exp.professional_name or nombre).upper())
@@ -558,10 +601,18 @@ def _write_bd_experiencias(
 # HOJA 4: ANALISIS_RTM
 # ============================================================================
 
-def _write_analisis_rtm(wb, resultados: list[ResultadoProfesional]) -> None:
+def _write_analisis_rtm(
+    wb,
+    resultados: list[ResultadoProfesional],
+    paleta_idx: Optional[dict] = None,
+) -> None:
     """
     Evaluacion cumple/no cumple por criterio (Paso 4). 25 cols.
+    Acepta paleta_idx compartido con BD_EXPERIENCIAS para que cada
+    profesional tenga el mismo color de banda en ambas hojas.
     """
+    if paleta_idx is None:
+        paleta_idx = {}
     ws = wb.create_sheet("ANALISIS_RTM")
     headers = [
         "Col 1: Cargo en el proyecto o OBRA",
@@ -599,8 +650,14 @@ def _write_analisis_rtm(wb, resultados: list[ResultadoProfesional]) -> None:
 
     fila = 2
     for rp in resultados:
+        nombre_prof = rp.profesional.name or ""
+        fill_banda = _color_para_profesional(nombre_prof, paleta_idx)
         for ev in rp.evaluaciones:
             exp = ev.experiencia_ref
+
+            # Pintar fila con color del profesional (alertas sobreescriben)
+            for col in range(1, 26):
+                ws.cell(row=fila, column=col).fill = fill_banda
 
             # Col 1 — cargo postulado
             ws.cell(row=fila, column=1, value=(ev.cargo_postulado or rp.profesional.role or "").upper())
@@ -830,10 +887,17 @@ def write_report_lircay(
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
 
+    # Paleta de colores por profesional. Compartida entre BD_EXPERIENCIAS y
+    # ANALISIS_RTM para que cada profesional tenga el mismo color en ambas
+    # hojas (facil de seguir visualmente entre tabs).
+    paleta_idx: dict[str, int] = {}
+
     _write_profesionales(wb, resultados)
     _write_requisitos_tdr(wb, resultados, requisitos_rtm_completo)
-    _write_bd_experiencias(wb, resultados, proposal_date, sunat_por_ruc)
-    _write_analisis_rtm(wb, resultados)
+    _write_bd_experiencias(
+        wb, resultados, proposal_date, sunat_por_ruc, paleta_idx,
+    )
+    _write_analisis_rtm(wb, resultados, paleta_idx)
     _write_resumen(wb, resultados, proposal_date, filename)
 
     output_path = Path(output_path)
