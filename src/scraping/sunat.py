@@ -32,6 +32,7 @@ import os
 import random
 import re
 import secrets
+import ssl
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,12 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.ssl_ import create_urllib3_context
+except ImportError:  # urllib3 muy viejo
+    create_urllib3_context = None  # type: ignore
 
 try:
     from rapidfuzz import fuzz
@@ -53,8 +60,69 @@ SEARCH_PATH = "/cl-ti-itmrconsruc/jcrS00Alias"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+
+# ─── TLS adapter custom ──────────────────────────────────────────────────────
+# Portales .gob.pe (incluyendo SUNAT) a veces rechazan los ciphers default de
+# Python/urllib3. Forzamos un context TLS más permisivo que acepte ciphers
+# legacy que estos portales gubernamentales aún sirven.
+#
+# Si SUNAT cierra conexiones activamente con el adapter default (RemoteDisconnected
+# en handshake), este SUNATTlsAdapter resuelve el problema en >90% de los casos.
+_LEGACY_CIPHERS = (
+    "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:"
+    "ECDH+AESGCM:DH+AESGCM:ECDH+AES:DH+AES:"
+    "RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS:@SECLEVEL=1"
+)
+
+
+class _SUNATTlsAdapter(HTTPAdapter):
+    """HTTPAdapter con ciphers legacy + SECLEVEL=1 para portales .gob.pe."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        if create_urllib3_context is None:
+            return super().init_poolmanager(*args, **kwargs)
+        ctx = create_urllib3_context()
+        try:
+            ctx.set_ciphers(_LEGACY_CIPHERS)
+        except ssl.SSLError:
+            # Algunos OpenSSL no soportan SECLEVEL=1, intentar sin él
+            ctx.set_ciphers(_LEGACY_CIPHERS.replace(":@SECLEVEL=1", ""))
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        if create_urllib3_context is None:
+            return super().proxy_manager_for(*args, **kwargs)
+        ctx = create_urllib3_context()
+        try:
+            ctx.set_ciphers(_LEGACY_CIPHERS)
+        except ssl.SSLError:
+            ctx.set_ciphers(_LEGACY_CIPHERS.replace(":@SECLEVEL=1", ""))
+        kwargs["ssl_context"] = ctx
+        return super().proxy_manager_for(*args, **kwargs)
+
+
+def _crear_session_sunat() -> requests.Session:
+    """Crea una session con el TLS adapter custom + headers de browser real."""
+    session = requests.Session()
+    session.mount("https://", _SUNATTlsAdapter())
+    session.headers.update({
+        "User-Agent": USER_AGENT,
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "es-PE,es;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+    return session
 
 # Retry config — SUNAT a veces cierra conexiones en mass o devuelve 5xx.
 # Configurable via env.
@@ -373,9 +441,7 @@ def consultar_ruc(
 
     own_session = session is None
     if session is None:
-        session = requests.Session()
-    if "User-Agent" not in session.headers:
-        session.headers["User-Agent"] = USER_AGENT
+        session = _crear_session_sunat()
 
     try:
         # Bootstrap con retry: GET para obtener cookies de sesion
@@ -473,9 +539,7 @@ def buscar_por_razon_social(
     """
     own_session = session is None
     if session is None:
-        session = requests.Session()
-    if "User-Agent" not in session.headers:
-        session.headers["User-Agent"] = USER_AGENT
+        session = _crear_session_sunat()
 
     try:
         r_form = _request_with_retry(
