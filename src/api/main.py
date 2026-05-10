@@ -1112,9 +1112,51 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                 )
                 experiencias.append(exp)
 
+        # ────────── Cruce SUNAT (best-effort, antes del Paso 4) ──────────
+        # Cache PostgreSQL TTL 30d. Si SUNAT falla, degradamos elegantemente.
+        sunat_dates: dict[str, _date] = {}
+        sunat_por_ruc: dict = {}
+        cruce_sunat_meta = {
+            "rucs_consultados": 0, "rucs_servidos_de_cache": 0,
+            "rucs_encontrados": 0, "total_alt04": 0,
+        }
+        try:
+            _update_job(job_id, progress_pct=82, progress_stage="Cruzando con SUNAT")
+            _append_job_log(job_id, "Cruce SUNAT: consultando RUCs (con cache)")
+            from src.validation.cruce_sunat import (
+                cruzar_experiencias as _cruzar_sunat,
+            )
+            with _get_conn() as conn:
+                resultado_sunat = _cruzar_sunat(experiencias, conn=conn)
+            cruce_sunat_meta.update({
+                "rucs_consultados": resultado_sunat.rucs_consultados,
+                "rucs_servidos_de_cache": resultado_sunat.rucs_servidos_de_cache,
+                "rucs_encontrados": resultado_sunat.rucs_encontrados,
+                "total_alt04": resultado_sunat.total_alt04,
+            })
+            for cruce in resultado_sunat.cruces:
+                empresa = cruce.empresa_sunat
+                if not empresa:
+                    continue
+                ruc_key = cruce.ruc_resuelto or cruce.ruc_declarado
+                if ruc_key:
+                    sunat_por_ruc[ruc_key] = empresa
+                    if empresa.fecha_inicio_actividades:
+                        sunat_dates[ruc_key] = empresa.fecha_inicio_actividades
+            _append_job_log(
+                job_id,
+                f"Cruce SUNAT: {cruce_sunat_meta['rucs_encontrados']}/"
+                f"{cruce_sunat_meta['rucs_consultados']+cruce_sunat_meta['rucs_servidos_de_cache']} "
+                f"encontrados, {cruce_sunat_meta['total_alt04']} ALT04",
+            )
+        except Exception as exc:
+            _append_job_log(job_id, f"Cruce SUNAT fallo (degradacion elegante): {exc}")
+            logger.warning("Cruce SUNAT fallo en _run_full_job: %s", exc)
+
         resultados_eval = evaluar_propuesta(
             profesionales=profesionales, experiencias=experiencias,
             requisitos_rtm=rtm_personal, proposal_date=_date.today(),
+            sunat_dates=sunat_dates,
         )
 
         total_alertas = sum(len(ev.alertas) for r in resultados_eval for ev in r.evaluaciones)
@@ -1122,20 +1164,21 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         _append_job_log(job_id, f"Evaluación: {len(profesionales)} prof, {con_rtm} con RTM, {total_alertas} alertas")
 
         # ════════════════════════════════════════════════════════════════
-        # FASE 4: Generar Excel
+        # FASE 4: Generar Excel (formato Lircay con datos SUNAT integrados)
         # ════════════════════════════════════════════════════════════════
         _update_job(job_id, progress_pct=95, progress_stage="Generando Excel")
-        _append_job_log(job_id, "FASE 4: Generando Excel")
+        _append_job_log(job_id, "FASE 4: Generando Excel (Lircay + SUNAT)")
 
-        from src.reporting.excel_writer import write_report
+        from src.reporting.excel_writer_lircay import write_report_lircay
 
         excel_dir = OUTPUT_DIR / job_id
         excel_dir.mkdir(parents=True, exist_ok=True)
         excel_path = excel_dir / f"evaluacion_{job_id}.xlsx"
 
-        write_report(
+        write_report_lircay(
             resultados=resultados_eval, output_path=excel_path,
             proposal_date=_date.today(), filename=pdf_path.name,
+            sunat_por_ruc=sunat_por_ruc,
         )
         _append_job_log(job_id, f"Excel generado: {excel_path.name}")
 
@@ -1154,6 +1197,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                 "total_evaluaciones": sum(len(r.evaluaciones) for r in resultados_eval),
                 "total_alertas": total_alertas,
             },
+            "cruce_sunat": cruce_sunat_meta,
             "excel_path": str(excel_path),
         }
 
