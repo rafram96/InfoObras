@@ -142,9 +142,19 @@ _file_handler.setFormatter(logging.Formatter(_LOG_FMT))
 _file_handler.addFilter(_JobIdFilter())
 logging.getLogger().addHandler(_file_handler)
 
-# Directorio donde se escriben logs por-job (uno por cada ejecucion)
-_JOB_LOGS_DIR = Path("data/logs")
-_JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+# Directorio donde se escriben logs por-job (uno por cada ejecucion).
+# Estructura nueva:
+#   data/logs/{job_id}/
+#     ├── job.log               (consolidado)
+#     ├── 01_ocr.log            (fase OCR)
+#     ├── 02_extraction.log     (fase extraccion LLM)
+#     ├── ...
+#     └── motor_ocr.log         (subprocess wrapper)
+# Ver src/api/job_logs.py para detalles.
+from src.api import job_logs as _job_logs_mod
+from src.api.job_logs import Phase as JobPhase
+
+_JOB_LOGS_DIR = _job_logs_mod.JOB_LOGS_DIR  # alias retrocompat
 
 
 def _with_job_logging(fn):
@@ -163,8 +173,8 @@ def _job_logging_context(job_id: str):
     Context manager que:
     1. Setea el contextvar job_id para que todos los logs durante el bloque
        lleven [job_id] en el formato
-    2. Agrega un FileHandler temporal que escribe SOLO los logs de este job
-       a data/logs/job-{job_id}.log (uno por cada re-run, modo append)
+    2. Agrega un FileHandler para el log consolidado del job (data/logs/{job_id}/job.log)
+    3. Al salir, cierra todos los handlers de fases que hayan quedado abiertos
 
     Uso:
         def _run_job(job_id, ...):
@@ -174,7 +184,8 @@ def _job_logging_context(job_id: str):
     """
     token = _JOB_ID_CTX.set(job_id)
 
-    per_job_path = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    # Log consolidado en data/logs/{job_id}/job.log
+    per_job_path = _job_logs_mod.consolidated_log_path(job_id)
     per_job_handler = logging.FileHandler(per_job_path, encoding="utf-8", mode="a")
     per_job_handler.setLevel(logging.DEBUG)
     per_job_handler.setFormatter(logging.Formatter(_LOG_FMT))
@@ -187,12 +198,25 @@ def _job_logging_context(job_id: str):
     try:
         yield
     finally:
+        # Cerrar handlers de fases si quedaron abiertos
+        try:
+            _job_logs_mod.cleanup_phase_handlers(job_id)
+        except Exception:
+            pass
         logging.getLogger().removeHandler(per_job_handler)
         try:
             per_job_handler.close()
         except Exception:
             pass
         _JOB_ID_CTX.reset(token)
+
+
+def _set_phase(job_id: str, phase: JobPhase) -> None:
+    """Helper para anotar la fase actual del job. Llamar al inicio de cada fase."""
+    try:
+        _job_logs_mod.set_current_phase(job_id, phase, _LOG_FMT)
+    except Exception as exc:
+        logger.warning("No se pudo setear phase=%s para job %s: %s", phase, job_id, exc)
 
 
 logger = logging.getLogger(__name__)
@@ -810,6 +834,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
         progress_stage="Iniciando TDR",
         started_at=datetime.now(timezone.utc),
     )
+    _set_phase(job_id, JobPhase.TDR)
     _append_job_log(
         job_id,
         f"Job iniciado — modo TDR (pipeline "
@@ -869,6 +894,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
                 _append_job_log(job_id, "Invocando motor-OCR para bases escaneadas...")
                 full_text = invoke_motor_ocr(
                     str(pdf_path), output_dir=str(job_output_dir),
+                    log_path=_job_logs_mod.motor_ocr_log_path(job_id),
                 )
                 _append_job_log(job_id, f"motor-OCR completado — {len(full_text)} chars")
             except Exception as ocr_err:
@@ -966,6 +992,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # ════════════════════════════════════════════════════════════════
         # FASE 1: OCR + Extracción de profesionales (propuesta)
         # ════════════════════════════════════════════════════════════════
+        _set_phase(job_id, JobPhase.OCR)
         _append_job_log(job_id, "FASE 1: OCR + Extracción de propuesta")
         _update_job(job_id, progress_pct=2, progress_stage="OCR propuesta")
 
@@ -1012,6 +1039,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
 
         # Extracción LLM (Pasos 2-3)
         if _EXTRACTION_AVAILABLE:
+            _set_phase(job_id, JobPhase.EXTRACTION)
             _update_job(job_id, progress_pct=40, progress_stage="Extrayendo profesionales (LLM)")
             _append_job_log(job_id, "Extracción LLM — Pasos 2-3")
 
@@ -1046,6 +1074,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # ════════════════════════════════════════════════════════════════
         # FASE 2: Extracción TDR (bases)
         # ════════════════════════════════════════════════════════════════
+        _set_phase(job_id, JobPhase.TDR)
         _update_job(job_id, progress_pct=65, progress_stage="Extrayendo requisitos TDR")
         _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
         _append_job_log(
@@ -1070,7 +1099,10 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             _append_job_log(job_id, "Bases escaneadas — invocando motor-OCR")
             try:
                 from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
-                full_text = invoke_motor_ocr(str(bases_path), output_dir=str(OUTPUT_DIR))
+                full_text = invoke_motor_ocr(
+                    str(bases_path), output_dir=str(OUTPUT_DIR),
+                    log_path=_job_logs_mod.motor_ocr_log_path(job_id),
+                )
             except Exception as ocr_err:
                 _append_job_log(job_id, f"ERROR motor-OCR bases: {ocr_err}")
                 raise RuntimeError(f"Bases escaneadas y motor-OCR falló: {ocr_err}") from ocr_err
@@ -1085,6 +1117,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # ════════════════════════════════════════════════════════════════
         # FASE 3: Evaluación RTM (Paso 4)
         # ════════════════════════════════════════════════════════════════
+        _set_phase(job_id, JobPhase.EVALUATION)
         _update_job(job_id, progress_pct=85, progress_stage="Evaluación RTM")
         _append_job_log(job_id, "FASE 3: Evaluación RTM — Paso 4")
 
@@ -1131,6 +1164,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             "rucs_encontrados": 0, "total_alt04": 0,
         }
         try:
+            _set_phase(job_id, JobPhase.SUNAT)
             _update_job(job_id, progress_pct=82, progress_stage="Cruzando con SUNAT")
             _append_job_log(job_id, "Cruce SUNAT: consultando RUCs (con cache)")
             from src.validation.cruce_sunat import (
@@ -1192,6 +1226,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # ════════════════════════════════════════════════════════════════
         # FASE 4: Generar Excel (formato Lircay con datos SUNAT integrados)
         # ════════════════════════════════════════════════════════════════
+        _set_phase(job_id, JobPhase.EXCEL)
         _update_job(job_id, progress_pct=95, progress_stage="Generando Excel")
         _append_job_log(
             job_id,
@@ -1988,25 +2023,103 @@ async def cruce_sunat_job(extraction_job_id: str):
 @app.get("/api/jobs/{job_id}/log", tags=["Jobs"])
 async def get_job_log(job_id: str):
     """
-    Retorna el archivo de log dedicado del job (data/logs/job-{id}.log).
-    Contiene TODOS los logs emitidos durante la ejecucion, incluyendo los
-    de librerias (extract_block, motor_ocr_client, etc.) gracias al filter
-    de contextvars.
+    Retorna el log consolidado del job (data/logs/{job_id}/job.log).
+    Contiene TODOS los logs emitidos durante la ejecucion. Para acceso por fase
+    usar /api/jobs/{job_id}/logs y /api/jobs/{job_id}/logs/{filename}.
+
+    Compat: también acepta logs en formato antiguo data/logs/job-{id}.log
+    (jobs procesados antes de la migracion a directorios por-job).
     """
     from fastapi.responses import PlainTextResponse
 
-    log_path = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    # Path nuevo (data/logs/{job_id}/job.log)
+    log_path = _job_logs_mod.consolidated_log_path(job_id)
     if not log_path.exists():
-        raise HTTPException(
-            404,
-            "Log no encontrado. El job quiza fue creado antes del contexto "
-            "de logging o el archivo fue limpiado al borrar el job.",
-        )
+        # Fallback al formato antiguo
+        legacy_path = _JOB_LOGS_DIR / f"job-{job_id}.log"
+        if legacy_path.exists():
+            log_path = legacy_path
+        else:
+            raise HTTPException(
+                404,
+                "Log no encontrado. El job quiza fue creado antes del contexto "
+                "de logging o el archivo fue limpiado al borrar el job.",
+            )
     try:
         content = log_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         raise HTTPException(500, f"Error leyendo log: {e}")
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/jobs/{job_id}/logs", tags=["Jobs"])
+async def list_job_logs(job_id: str):
+    """
+    Lista todos los archivos de log disponibles para un job.
+    Cada archivo corresponde a una fase del pipeline.
+
+    Returns:
+      {"files": [{filename, size_bytes, phase}]}
+    """
+    return {"files": _job_logs_mod.list_log_files(job_id)}
+
+
+@app.get("/api/jobs/{job_id}/logs/{filename}", tags=["Jobs"])
+async def get_job_log_file(job_id: str, filename: str):
+    """Retorna el contenido de un archivo de log especifico (por fase)."""
+    from fastapi.responses import PlainTextResponse
+
+    content = _job_logs_mod.read_log_file(job_id, filename)
+    if content is None:
+        raise HTTPException(404, f"Log {filename} no encontrado para job {job_id}")
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/jobs/{job_id}/bundle", tags=["Jobs"])
+async def get_job_bundle(job_id: str):
+    """
+    Empaqueta TODO el diagnostico del job en un ZIP descargable:
+      - logs por fase + log consolidado
+      - dumps LLM
+      - result.json snapshot
+      - README con metadata
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+
+    # Cargar metadata + result del job
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, filename, job_type, status, created_at, started_at, "
+                "progress_pct, progress_stage, doc_total_pages, error, "
+                "source_job_id, result FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} no encontrado")
+
+    job_meta = {k: v for k, v in row.items() if k != "result"}
+    job_result = row.get("result")
+    if isinstance(job_result, str):
+        try:
+            job_result = json.loads(job_result)
+        except Exception:
+            pass
+
+    zip_bytes = _job_logs_mod.bundle_job_logs(
+        job_id, job_meta=job_meta, job_result=job_result,
+    )
+
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="job-{job_id}-bundle.zip"',
+        },
+    )
 
 
 @app.get("/api/jobs/{job_id}/llm-calls", tags=["Jobs"])
@@ -2389,9 +2502,14 @@ async def delete_job(job_id: str):
     uploads_dir = UPLOADS_DIR / job_id
     if uploads_dir.exists():
         shutil.rmtree(uploads_dir, ignore_errors=True)
-    job_log = _JOB_LOGS_DIR / f"job-{job_id}.log"
-    if job_log.exists():
-        job_log.unlink(missing_ok=True)
+    # Borrar directorio de logs por-job (incluye job.log + logs por fase + motor_ocr.log)
+    job_log_dir = _JOB_LOGS_DIR / job_id
+    if job_log_dir.exists():
+        shutil.rmtree(job_log_dir, ignore_errors=True)
+    # Compat: borrar tambien el log antiguo en formato data/logs/job-{id}.log
+    legacy_job_log = _JOB_LOGS_DIR / f"job-{job_id}.log"
+    if legacy_job_log.exists():
+        legacy_job_log.unlink(missing_ok=True)
     llm_calls_dir = Path("data/llm_calls") / job_id
     if llm_calls_dir.exists():
         shutil.rmtree(llm_calls_dir, ignore_errors=True)

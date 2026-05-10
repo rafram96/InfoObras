@@ -29,6 +29,7 @@ def invoke_motor_ocr(
     output_dir: str,
     pages: Optional[list] = None,
     timeout: int = 7200,
+    log_path: Optional[Path] = None,
 ) -> str:
     """
     Invoca motor-OCR como subprocess en mode="ocr_only".
@@ -41,6 +42,9 @@ def invoke_motor_ocr(
         output_dir: Directorio donde guardar archivos .md
         pages: Lista de números de página (1-based). None = todas.
         timeout: Timeout en segundos (default 7200 = 2 horas)
+        log_path: Path al archivo de log del subprocess. Si None, usa
+                  "motor_ocr.log" en cwd (compat). Recomendado pasar
+                  data/logs/{job_id}/motor_ocr.log para aislar logs por job.
 
     Returns:
         Texto extraído consolidado
@@ -71,8 +75,10 @@ def invoke_motor_ocr(
 
     results_file = tempfile.mktemp(suffix=".json")
 
-    # Log file para capturar output del subprocess
-    log_file = Path("motor_ocr.log")
+    # Log file para capturar output del subprocess. Default a "motor_ocr.log"
+    # (compartido entre jobs) — los runners deberian pasar log_path por job.
+    log_file = Path(log_path) if log_path else Path("motor_ocr.log")
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         if not MOTOR_OCR_WRAPPER or not MOTOR_OCR_PYTHON:
