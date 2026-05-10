@@ -306,7 +306,11 @@ def evaluar_profesional(
         # Alertas
         sunat_date = None
         if sunat_dates and exp.ruc:
-            sunat_date = sunat_dates.get(exp.ruc)
+            # Normalizar exp.ruc (puede traer "RUC: 12345", espacios, guiones)
+            # para hacer match con sunat_dates indexado por 11 digitos limpios.
+            ruc_limpio = "".join(c for c in str(exp.ruc) if c.isdigit())
+            if len(ruc_limpio) == 11:
+                sunat_date = sunat_dates.get(ruc_limpio)
 
         alertas = check_alerts(
             exp=exp,

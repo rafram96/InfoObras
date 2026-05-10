@@ -472,7 +472,12 @@ def _write_bd_experiencias(
                 )
                 ws.cell(row=fila, column=20).fill = _FILL_AMARILLO
             # Col 21 — fecha de inscripcion SUNAT (cruce SUNAT)
-            empresa_sunat = sunat_por_ruc.get(exp.ruc) if exp.ruc else None
+            # exp.ruc puede venir crudo del PDF ("RUC: 20263373058", con
+            # espacios, guiones, etc) — normalizar a 11 digitos para match
+            # con sunat_por_ruc (indexado por RUC limpio).
+            ruc_limpio = "".join(c for c in str(exp.ruc or "") if c.isdigit())
+            ruc_limpio = ruc_limpio if len(ruc_limpio) == 11 else None
+            empresa_sunat = sunat_por_ruc.get(ruc_limpio) if ruc_limpio else None
             fecha_inscripcion = (
                 empresa_sunat.fecha_inscripcion if empresa_sunat else None
             )
