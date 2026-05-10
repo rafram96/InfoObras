@@ -1182,16 +1182,28 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                 empresa = cruce.empresa_sunat
                 if not empresa:
                     continue
-                ruc_key = cruce.ruc_resuelto or cruce.ruc_declarado
-                if ruc_key:
+                # Usar fecha_inscripcion (mismo criterio que cruce_sunat._check_alt04)
+                # — fecha cuando la empresa formalmente existe en SUNAT, mas
+                # conservador que fecha_inicio_actividades.
+                fecha_para_alt04 = empresa.fecha_inscripcion
+                # Indexar por TODOS los rucs aplicables al cruce — el writer y
+                # el motor de reglas buscan por exp.ruc (declarado), que puede
+                # diferir de ruc_resuelto si hubo fallback fuzzy.
+                rucs_a_indexar = []
+                if cruce.ruc_resuelto:
+                    rucs_a_indexar.append(cruce.ruc_resuelto)
+                if cruce.ruc_declarado and cruce.ruc_declarado != cruce.ruc_resuelto:
+                    rucs_a_indexar.append(cruce.ruc_declarado)
+                for ruc_key in rucs_a_indexar:
                     sunat_por_ruc[ruc_key] = empresa
-                    if empresa.fecha_inicio_actividades:
-                        sunat_dates[ruc_key] = empresa.fecha_inicio_actividades
+                    if fecha_para_alt04:
+                        sunat_dates[ruc_key] = fecha_para_alt04
             _append_job_log(
                 job_id,
                 f"Cruce SUNAT: {cruce_sunat_meta['rucs_encontrados']}/"
                 f"{cruce_sunat_meta['rucs_consultados']+cruce_sunat_meta['rucs_servidos_de_cache']} "
-                f"encontrados, {cruce_sunat_meta['total_alt04']} ALT04",
+                f"encontrados, {cruce_sunat_meta['total_alt04']} ALT04 "
+                f"(indexados por {len(sunat_por_ruc)} RUCs unicos)",
             )
         except Exception as exc:
             _append_job_log(job_id, f"Cruce SUNAT fallo (degradacion elegante): {exc}")
@@ -1717,14 +1729,19 @@ async def evaluate_job(
             empresa = cruce.empresa_sunat
             if not empresa:
                 continue
-            # Indexar por ruc_resuelto (puede diferir del declarado tras fallback)
-            ruc_key = cruce.ruc_resuelto or cruce.ruc_declarado
-            if ruc_key:
+            # Usar fecha_inscripcion (consistente con cruce_sunat._check_alt04).
+            # Indexar por ruc_declarado Y resuelto para que el writer/motor
+            # encuentren los datos sin importar cual recibieron en exp.ruc.
+            fecha_para_alt04 = empresa.fecha_inscripcion
+            rucs_a_indexar = []
+            if cruce.ruc_resuelto:
+                rucs_a_indexar.append(cruce.ruc_resuelto)
+            if cruce.ruc_declarado and cruce.ruc_declarado != cruce.ruc_resuelto:
+                rucs_a_indexar.append(cruce.ruc_declarado)
+            for ruc_key in rucs_a_indexar:
                 sunat_por_ruc[ruc_key] = empresa
-                # ALT04 usa fecha_inicio_actividades (cuando la empresa empezo
-                # a operar), no fecha_inscripcion (puede ser previa)
-                if empresa.fecha_inicio_actividades:
-                    sunat_dates[ruc_key] = empresa.fecha_inicio_actividades
+                if fecha_para_alt04:
+                    sunat_dates[ruc_key] = fecha_para_alt04
     except Exception as exc:
         logger.warning(
             "Cruce SUNAT fallo en /evaluate (degradacion elegante): %s", exc
