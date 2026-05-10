@@ -754,7 +754,7 @@ def _write_resumen(
         cargo = rp.profesional.role or "(sin cargo)"
         n_alertas_criticas = sum(
             1 for ev in rp.evaluaciones for a in ev.alertas
-            if a.severity == Severity.CRITICA
+            if a.severity == Severity.CRITICAL
         )
         marca = "🔴" if n_alertas_criticas > 0 else "✅"
         ws.cell(row=fila, column=2, value=f"{idx}. {nombre}")
