@@ -319,35 +319,22 @@ def cruzar_experiencias(
             fecha_inicio_exp=exp.start_date,
         )
 
-        # ─── Caso 1: tenemos RUC válido ─────────────────────────────────────
+        empresa: Optional[EmpresaSUNAT] = None
+        resuelto_por_nombre = False  # True si llegamos al empresa por fuzzy nombre
+
+        # ─── Paso 1: lookup directo por RUC declarado (si lo hay) ──────────
         if ruc_declarado:
             empresa = ctx.lookup_ruc(ruc_declarado)
-            cruce.empresa_sunat = empresa
+            if empresa is not None:
+                cruce.empresa_sunat = empresa
+                cruce.ruc_resuelto = ruc_declarado
 
-            if empresa is None:
-                if ruc_declarado not in rucs_no_encontrados:
-                    rucs_no_encontrados.append(ruc_declarado)
-                cruce.senales.append(SenalCruceSUNAT(
-                    severidad="observacion",
-                    codigo="RUC_NO_ENCONTRADO",
-                    mensaje=(
-                        f"RUC {ruc_declarado} no encontrado en SUNAT "
-                        f"(puede ser RUC invalido o el portal no respondio)"
-                    ),
-                ))
-            else:
-                if _check_alt04(cruce, empresa, exp.start_date):
-                    total_alt04 += 1
-                score = _aplicar_match_nombre(cruce, exp.company, empresa)
-                if score >= 0 and score < THRESHOLD_CRITICAL:
-                    total_mismatches += 1
-                _check_estado_baja(cruce, empresa)
-
-            cruces.append(cruce)
-            continue
-
-        # ─── Caso 2: sin RUC, pero hay nombre ────────────────────────────────
-        if exp.company:
+        # ─── Paso 2: fallback por nombre ────────────────────────────────────
+        # Se intenta SIEMPRE si tenemos nombre y todavia no tenemos empresa.
+        # Aplica a 2 casos:
+        #   (a) sin RUC declarado
+        #   (b) con RUC declarado pero SUNAT no devolvio datos (RUC mal escrito)
+        if empresa is None and exp.company:
             try:
                 candidatos_raw = buscar_por_razon_social(exp.company)
             except Exception as exc:
@@ -356,7 +343,6 @@ def cruzar_experiencias(
                 )
                 candidatos_raw = []
 
-            # Rankear por fuzzy contra el nombre declarado
             candidatos = sorted([
                 CandidatoEmpresa(
                     ruc=c["ruc"],
@@ -368,72 +354,114 @@ def cruzar_experiencias(
                 for c in candidatos_raw
             ], key=lambda c: c.score, reverse=True)
 
-            if not candidatos or candidatos[0].score < THRESHOLD_CRITICAL:
+            if candidatos and candidatos[0].score >= THRESHOLD_CRITICAL:
+                top1 = candidatos[0]
+                top2_score = candidatos[1].score if len(candidatos) >= 2 else 0
+                es_ambiguo = (
+                    top1.score < THRESHOLD_WARNING
+                    or (top1.score - top2_score) < AMBIGUO_DELTA
+                )
+
+                if es_ambiguo:
+                    cruce.candidatos_ambiguos = candidatos[:5]
+                    cruce.senales.append(SenalCruceSUNAT(
+                        severidad="observacion",
+                        codigo="AMBIGUO_REQUIERE_HUMANO",
+                        mensaje=(
+                            f"Multiples candidatos para '{exp.company}': "
+                            f"top score={top1.score} ({top1.razon_social}), "
+                            f"requiere confirmacion humana"
+                        ),
+                    ))
+                    total_ambiguos += 1
+                else:
+                    # Match unico confiable → consultar el RUC del top1
+                    empresa = ctx.lookup_ruc(top1.ruc)
+                    if empresa is not None:
+                        cruce.empresa_sunat = empresa
+                        cruce.ruc_resuelto = top1.ruc
+                        cruce.score_match_nombre = top1.score
+                        resuelto_por_nombre = True
+
+                        # Senal segun el caso:
+                        if ruc_declarado:
+                            # RUC declarado fallo, pero por nombre encontramos
+                            # OTRO RUC. Critico: RUC mal escrito en certificado.
+                            cruce.senales.append(SenalCruceSUNAT(
+                                severidad="critica",
+                                codigo="RUC_DECLARADO_INCORRECTO",
+                                mensaje=(
+                                    f"RUC declarado {ruc_declarado} no se "
+                                    f"encontro en SUNAT, pero por nombre "
+                                    f"matchea '{top1.razon_social}' con RUC "
+                                    f"{top1.ruc} (score: {top1.score}/100). "
+                                    f"El RUC del certificado puede tener typo."
+                                ),
+                            ))
+                            total_mismatches += 1
+                        else:
+                            cruce.senales.append(SenalCruceSUNAT(
+                                severidad="informativa",
+                                codigo="RUC_INFERIDO_POR_NOMBRE",
+                                mensaje=(
+                                    f"RUC {top1.ruc} inferido por fuzzy match "
+                                    f"(score: {top1.score}/100) — el "
+                                    f"certificado no lo declaraba"
+                                ),
+                            ))
+            else:
+                # Busqueda por nombre tampoco dio resultados utiles
                 cruce.senales.append(SenalCruceSUNAT(
                     severidad="observacion",
                     codigo="NO_ENCONTRADO_POR_NOMBRE",
                     mensaje=(
-                        f"No se encontro empresa parecida a '{exp.company}' en SUNAT"
-                        f" (busqueda devolvio {len(candidatos)} resultados, "
-                        f"mejor score: {candidatos[0].score if candidatos else 0})"
+                        f"No se encontro empresa parecida a '{exp.company}' "
+                        f"en SUNAT (busqueda devolvio {len(candidatos)} "
+                        f"resultados, mejor score: "
+                        f"{candidatos[0].score if candidatos else 0})"
                     ),
                 ))
-                cruces.append(cruce)
-                continue
 
-            top1 = candidatos[0]
+        # ─── Paso 3: empresa encontrada → validaciones ──────────────────────
+        if empresa is not None:
+            if _check_alt04(cruce, empresa, exp.start_date):
+                total_alt04 += 1
+            # Match nombre↔razon social: solo aplicar si vino por RUC declarado.
+            # Si vino por busqueda de nombre, el match ya esta garantizado >= 85.
+            if not resuelto_por_nombre:
+                score = _aplicar_match_nombre(cruce, exp.company, empresa)
+                if score >= 0 and score < THRESHOLD_CRITICAL:
+                    total_mismatches += 1
+            _check_estado_baja(cruce, empresa)
 
-            # ¿Top1 es claramente mejor que top2?
-            top2_score = candidatos[1].score if len(candidatos) >= 2 else 0
-            es_ambiguo = (
-                top1.score < THRESHOLD_WARNING
-                or (top1.score - top2_score) < AMBIGUO_DELTA
-            )
-
-            if es_ambiguo:
-                cruce.candidatos_ambiguos = candidatos[:5]  # top 5 para UI
-                cruce.senales.append(SenalCruceSUNAT(
-                    severidad="observacion",
-                    codigo="AMBIGUO_REQUIERE_HUMANO",
-                    mensaje=(
-                        f"Multiples candidatos para '{exp.company}': "
-                        f"top score={top1.score} ({top1.razon_social}), "
-                        f"requiere confirmacion humana"
-                    ),
-                ))
-                total_ambiguos += 1
-                cruces.append(cruce)
-                continue
-
-            # Match único confiable → consultar el RUC del top1
-            empresa = ctx.lookup_ruc(top1.ruc)
-            cruce.empresa_sunat = empresa
-            cruce.ruc_resuelto = top1.ruc
-            cruce.score_match_nombre = top1.score
-
+        # ─── Paso 4: no encontramos empresa por ningun camino ───────────────
+        elif ruc_declarado and not exp.company:
+            # RUC declarado pero sin nombre para fallback
+            if ruc_declarado not in rucs_no_encontrados:
+                rucs_no_encontrados.append(ruc_declarado)
+            cruce.senales.append(SenalCruceSUNAT(
+                severidad="observacion",
+                codigo="RUC_NO_ENCONTRADO",
+                mensaje=(
+                    f"RUC {ruc_declarado} no encontrado en SUNAT "
+                    f"(no hay nombre declarado para fallback por razon social)"
+                ),
+            ))
+        elif ruc_declarado and exp.company:
+            # Ambos fallaron. Registrar el RUC fallido.
+            if ruc_declarado not in rucs_no_encontrados:
+                rucs_no_encontrados.append(ruc_declarado)
+            # La senal NO_ENCONTRADO_POR_NOMBRE ya fue agregada arriba.
+        elif not ruc_declarado and not exp.company:
             cruce.senales.append(SenalCruceSUNAT(
                 severidad="informativa",
-                codigo="RUC_INFERIDO_POR_NOMBRE",
+                codigo="SIN_DATOS_EMPRESA",
                 mensaje=(
-                    f"RUC {top1.ruc} inferido por fuzzy match "
-                    f"(score: {top1.score}/100) — el certificado no lo declaraba"
+                    "Experiencia sin RUC ni nombre de empresa — "
+                    "no se puede cruzar con SUNAT"
                 ),
             ))
 
-            if empresa:
-                if _check_alt04(cruce, empresa, exp.start_date):
-                    total_alt04 += 1
-                _check_estado_baja(cruce, empresa)
-
-            cruces.append(cruce)
-            continue
-
-        # ─── Caso 3: ni RUC ni nombre ────────────────────────────────────────
-        cruce.senales.append(SenalCruceSUNAT(
-            severidad="informativa",
-            codigo="SIN_DATOS_EMPRESA",
-            mensaje="Experiencia sin RUC ni nombre de empresa — no se puede cruzar",
-        ))
         cruces.append(cruce)
 
     total_senales = sum(len(c.senales) for c in cruces)
