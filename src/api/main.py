@@ -1198,6 +1198,19 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                     sunat_por_ruc[ruc_key] = empresa
                     if fecha_para_alt04:
                         sunat_dates[ruc_key] = fecha_para_alt04
+
+            # Inyectar el cruce SUNAT inline en cada experiencia, en el mismo
+            # orden de construccion. Asi el panel (/jobs/[id]) puede mostrar
+            # los datos SUNAT por experiencia sin re-consultar.
+            exp_idx_inj = 0
+            for _sec in extraction_result.get("secciones", []):
+                for _exp_data in _sec.get("experiencias", []):
+                    if exp_idx_inj < len(resultado_sunat.cruces):
+                        _exp_data["cruce_sunat"] = resultado_sunat.cruces[
+                            exp_idx_inj
+                        ].to_dict()
+                    exp_idx_inj += 1
+
             _append_job_log(
                 job_id,
                 f"Cruce SUNAT: {cruce_sunat_meta['rucs_encontrados']}/"
