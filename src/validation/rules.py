@@ -28,6 +28,7 @@ class AlertCode(str, Enum):
     ALT07 = "ALT07"  # Profesión no coincide
     ALT08 = "ALT08"  # Tipo de obra no coincide
     ALT09 = "ALT09"  # Colegiatura no vigente (verificación manual)
+    ALT11 = "ALT11"  # Solapamiento temporal con otra experiencia del mismo profesional
 
 
 class Severity(str, Enum):

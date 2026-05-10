@@ -324,7 +324,78 @@ def evaluar_profesional(
         evaluacion.experiencia_ref = exp
         resultado.evaluaciones.append(evaluacion)
 
+    # ALT11: solapamientos temporales entre experiencias del mismo profesional.
+    # Se calcula al final, una vez tenemos todas las evaluaciones, porque
+    # check_alerts() solo ve una experiencia a la vez.
+    _detectar_solapamientos_temporales(resultado.evaluaciones, proposal_date)
+
     return resultado
+
+
+def _detectar_solapamientos_temporales(evaluaciones, proposal_date: date) -> None:
+    """
+    Detecta pares de experiencias del MISMO profesional cuyos periodos
+    solapan y agrega Alert(code=ALT11, severity=CRITICAL) a AMBAS
+    evaluaciones de cada par solapado.
+
+    Modifica `evaluaciones` in-place (cada evaluacion.alertas).
+
+    Reglas:
+      - Si exp.end_date es None ("a la fecha"), se usa proposal_date como cierre.
+      - Si exp.start_date es None, la experiencia se ignora (no comparable).
+      - Solapamiento = (start_i <= end_j) AND (end_i >= start_j).
+      - Cuenta dias de solapamiento (inclusive ambos extremos).
+    """
+    from src.validation.rules import Alert, AlertCode, Severity
+
+    # Recopilar items comparables (start_date no None, end_date defaulteada)
+    items = []
+    for ev in evaluaciones:
+        exp = ev.experiencia_ref
+        if not exp or not exp.start_date:
+            continue
+        end = exp.end_date or proposal_date
+        items.append((ev, exp.start_date, end, exp))
+
+    for i in range(len(items)):
+        ev_i, start_i, end_i, exp_i = items[i]
+        for j in range(i + 1, len(items)):
+            ev_j, start_j, end_j, exp_j = items[j]
+
+            # ¿Solapan?
+            if start_i <= end_j and end_i >= start_j:
+                solap_start = max(start_i, start_j)
+                solap_end = min(end_i, end_j)
+                dias = (solap_end - solap_start).days + 1
+                proyecto_j = (exp_j.project_name or "").strip() or "(sin nombre)"
+                proyecto_i = (exp_i.project_name or "").strip() or "(sin nombre)"
+
+                ev_i.alertas.append(Alert(
+                    code=AlertCode.ALT11,
+                    severity=Severity.CRITICAL,
+                    description=(
+                        f"Solapamiento temporal con otra experiencia: "
+                        f"'{proyecto_j[:60]}' "
+                        f"({start_j:%d/%m/%Y} - {end_j:%d/%m/%Y}). "
+                        f"Periodo solapado: {solap_start:%d/%m/%Y} - "
+                        f"{solap_end:%d/%m/%Y} ({dias} dias). "
+                        f"Imposible para cargos presenciales (Sup./Res./Jefe)."
+                    ),
+                    experience=exp_i,
+                ))
+                ev_j.alertas.append(Alert(
+                    code=AlertCode.ALT11,
+                    severity=Severity.CRITICAL,
+                    description=(
+                        f"Solapamiento temporal con otra experiencia: "
+                        f"'{proyecto_i[:60]}' "
+                        f"({start_i:%d/%m/%Y} - {end_i:%d/%m/%Y}). "
+                        f"Periodo solapado: {solap_start:%d/%m/%Y} - "
+                        f"{solap_end:%d/%m/%Y} ({dias} dias). "
+                        f"Imposible para cargos presenciales (Sup./Res./Jefe)."
+                    ),
+                    experience=exp_j,
+                ))
 
 
 # ---------------------------------------------------------------------------

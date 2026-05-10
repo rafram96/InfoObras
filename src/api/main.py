@@ -1246,7 +1246,40 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
 
         total_alertas = sum(len(ev.alertas) for r in resultados_eval for ev in r.evaluaciones)
         con_rtm = sum(1 for r in resultados_eval if r.requisito_encontrado)
-        _append_job_log(job_id, f"Evaluación: {len(profesionales)} prof, {con_rtm} con RTM, {total_alertas} alertas")
+        total_alt11 = sum(
+            1 for r in resultados_eval for ev in r.evaluaciones
+            for a in ev.alertas if a.code.value == "ALT11"
+        )
+        _append_job_log(
+            job_id,
+            f"Evaluación: {len(profesionales)} prof, {con_rtm} con RTM, "
+            f"{total_alertas} alertas ({total_alt11} ALT11 solapamientos)",
+        )
+
+        # Inyectar alertas del motor de reglas en cada experiencia para que el
+        # panel /jobs/[id] las muestre inline (junto a las senales SUNAT).
+        # Mapeo por orden: experiencias[i] ↔ resultados_eval[*].evaluaciones[i]
+        # (mismo orden de construccion garantizado).
+        _all_evaluaciones = [
+            ev for rp in resultados_eval for ev in rp.evaluaciones
+        ]
+        _exp_idx2 = 0
+        for _sec in extraction_result.get("secciones", []):
+            for _exp_data in _sec.get("experiencias", []):
+                if _exp_idx2 < len(_all_evaluaciones):
+                    _ev = _all_evaluaciones[_exp_idx2]
+                    _exp_data["alertas_motor"] = [
+                        {
+                            "codigo": a.code.value,
+                            "severidad": (
+                                "critica" if a.severity.value == "CRITICO"
+                                else "observacion"
+                            ),
+                            "mensaje": a.description,
+                        }
+                        for a in _ev.alertas
+                    ]
+                _exp_idx2 += 1
 
         # ════════════════════════════════════════════════════════════════
         # FASE 4: Generar Excel (formato Lircay con datos SUNAT integrados)
