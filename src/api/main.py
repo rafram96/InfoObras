@@ -1937,6 +1937,139 @@ async def cruce_infoobras_job(
     }
 
 
+@app.get("/api/jobs/{job_id}/export", tags=["Jobs"])
+async def export_job(job_id: str, tdr_job_id: Optional[str] = None):
+    """
+    Exporta TODO el resultado de un job como JSON estructurado, para
+    iterar el cruce/excel/writer en local sin re-correr OCR + LLM.
+
+    Args:
+        job_id: ID del job principal (extraction, tdr o full).
+        tdr_job_id: opcional. Si el job principal es type=extraction y
+                    se quiere incluir el TDR de otro job, pasarlo aqui.
+
+    Returns:
+        JSON con esquema:
+        {
+          "format_version": 1,
+          "job_id": ..., "job_type": ..., "filename": ..., "created_at": ...,
+          "extraction": {secciones, doc_meta} | null,
+          "tdr": {rtm_personal, factores_evaluacion, rtm_postor} | null,
+          "cruce_sunat": {...} | null,        # snapshot del ultimo cruce
+          "evaluacion": {...} | null          # resumen del Paso 4 si esta
+        }
+
+    Uso local con el CLI:
+        curl http://server:8000/api/jobs/abc123/export -o job.json
+        python -m src.tools.regenerate_excel --input job.json --output eval.xlsx
+    """
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, filename, job_type, status, created_at, "
+                "started_at, result FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(404, f"Job {job_id} no encontrado")
+
+    result = row["result"]
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            result = {}
+    if not isinstance(result, dict):
+        result = {}
+
+    job_type = row["job_type"]
+
+    # Estructura unificada del export
+    export: dict = {
+        "format_version": 1,
+        "job_id": row["id"],
+        "job_type": job_type,
+        "filename": row["filename"],
+        "status": row["status"],
+        "created_at": str(row["created_at"]) if row["created_at"] else None,
+        "started_at": str(row["started_at"]) if row["started_at"] else None,
+        "extraction": None,
+        "tdr": None,
+        "cruce_sunat": None,
+        "evaluacion": None,
+    }
+
+    # Extraction (secciones con profesionales y experiencias)
+    if job_type in ("extraction", "full") and "secciones" in result:
+        export["extraction"] = {
+            "doc_meta": {
+                k: result.get(k) for k in (
+                    "total_pages", "pages_paddle", "pages_qwen",
+                    "pages_pdfplumber", "pages_error",
+                    "conf_promedio", "tiempo_total", "engine",
+                ) if k in result
+            },
+            "secciones": result.get("secciones", []),
+        }
+
+    # TDR (del mismo job si es type=full o tdr; o de otro job si tdr_job_id)
+    if job_type == "tdr":
+        export["tdr"] = {
+            "rtm_personal": result.get("rtm_personal", []),
+            "factores_evaluacion": result.get("factores_evaluacion", []),
+            "rtm_postor": result.get("rtm_postor", []),
+            "total_cargos": result.get("total_cargos", 0),
+        }
+    elif job_type == "full":
+        tdr_block = result.get("tdr") or {}
+        export["tdr"] = {
+            "rtm_personal": tdr_block.get("rtm_personal", []),
+            "factores_evaluacion": tdr_block.get("factores_evaluacion", []),
+            "rtm_postor": tdr_block.get("rtm_postor", []),
+            "total_cargos": tdr_block.get("total_cargos") or len(
+                tdr_block.get("rtm_personal", [])
+            ),
+        }
+
+    # Si se pidio TDR de otro job (caso extraction-only + tdr separado)
+    if tdr_job_id and not export["tdr"]:
+        with _get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT result FROM jobs WHERE id = %s AND job_type = 'tdr'",
+                    (tdr_job_id,),
+                )
+                tdr_row = cur.fetchone()
+        if tdr_row:
+            tdr_result = tdr_row["result"]
+            if isinstance(tdr_result, str):
+                try:
+                    tdr_result = json.loads(tdr_result)
+                except Exception:
+                    tdr_result = {}
+            export["tdr"] = {
+                "rtm_personal": tdr_result.get("rtm_personal", []),
+                "factores_evaluacion": tdr_result.get("factores_evaluacion", []),
+                "rtm_postor": tdr_result.get("rtm_postor", []),
+                "total_cargos": tdr_result.get("total_cargos") or len(
+                    tdr_result.get("rtm_personal", [])
+                ),
+                "_imported_from_job": tdr_job_id,
+            }
+
+    # Cruce SUNAT (si existe en result, lo incluimos para reusar localmente)
+    if "cruce_sunat" in result:
+        export["cruce_sunat"] = result["cruce_sunat"]
+
+    # Resumen de evaluacion
+    if "evaluacion" in result:
+        export["evaluacion"] = result["evaluacion"]
+
+    return export
+
+
 @app.post("/api/admin/sunat/purge-cache", tags=["Admin"])
 async def admin_purge_sunat_cache(only_misses: bool = True):
     """
