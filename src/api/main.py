@@ -1163,6 +1163,22 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             _append_job_log(job_id, f"Cruce SUNAT fallo (degradacion elegante): {exc}")
             logger.warning("Cruce SUNAT fallo en _run_full_job: %s", exc)
 
+        # Convertir rtm_personal (list[dict]) a RequisitoPersonal[] para el writer
+        from src.extraction.models import RequisitoPersonal
+        requisitos_rtm_completo_full: list[RequisitoPersonal] = []
+        for r in rtm_personal:
+            if isinstance(r, dict):
+                try:
+                    requisitos_rtm_completo_full.append(RequisitoPersonal.from_dict(r))
+                except Exception as exc:
+                    logger.warning("No se pudo parsear RequisitoPersonal: %s", exc)
+            else:
+                requisitos_rtm_completo_full.append(r)
+        _append_job_log(
+            job_id,
+            f"TDR cargos para Excel: {len(requisitos_rtm_completo_full)} (esperado=17)",
+        )
+
         resultados_eval = evaluar_propuesta(
             profesionales=profesionales, experiencias=experiencias,
             requisitos_rtm=rtm_personal, proposal_date=_date.today(),
@@ -1177,7 +1193,12 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # FASE 4: Generar Excel (formato Lircay con datos SUNAT integrados)
         # ════════════════════════════════════════════════════════════════
         _update_job(job_id, progress_pct=95, progress_stage="Generando Excel")
-        _append_job_log(job_id, "FASE 4: Generando Excel (Lircay + SUNAT)")
+        _append_job_log(
+            job_id,
+            f"FASE 4: Generando Excel (Lircay + SUNAT) — "
+            f"{len(requisitos_rtm_completo_full)} cargos TDR, "
+            f"{len(sunat_por_ruc)} RUCs SUNAT",
+        )
 
         from src.reporting.excel_writer_lircay import write_report_lircay
 
@@ -1189,6 +1210,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             resultados=resultados_eval, output_path=excel_path,
             proposal_date=_date.today(), filename=pdf_path.name,
             sunat_por_ruc=sunat_por_ruc,
+            requisitos_rtm_completo=requisitos_rtm_completo_full,
         )
         _append_job_log(job_id, f"Excel generado: {excel_path.name}")
 
@@ -1675,7 +1697,19 @@ async def evaluate_job(
 
     # ─── Paso 4 (motor de reglas, ahora con datos SUNAT) ───────────────────
     from src.validation.evaluator import evaluar_propuesta
+    from src.extraction.models import RequisitoPersonal
     rtm_personal = tdr_result.get("rtm_personal", [])
+
+    # Convertir dicts del TDR a objetos RequisitoPersonal para el writer.
+    requisitos_rtm_completo: list[RequisitoPersonal] = []
+    for r in rtm_personal:
+        if isinstance(r, dict):
+            try:
+                requisitos_rtm_completo.append(RequisitoPersonal.from_dict(r))
+            except Exception as exc:
+                logger.warning("No se pudo parsear RequisitoPersonal: %s", exc)
+        else:
+            requisitos_rtm_completo.append(r)
 
     resultados = evaluar_propuesta(
         profesionales=profesionales,
@@ -1698,6 +1732,7 @@ async def evaluate_job(
         proposal_date=_date.today(),
         filename=ext_row.get("filename", ""),
         sunat_por_ruc=sunat_por_ruc,
+        requisitos_rtm_completo=requisitos_rtm_completo,
     )
 
     # Resumen

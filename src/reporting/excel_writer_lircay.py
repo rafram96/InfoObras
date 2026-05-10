@@ -238,10 +238,21 @@ def _write_profesionales(wb, resultados: list[ResultadoProfesional]) -> None:
 # HOJA 2: REQUISITOS_TDR
 # ============================================================================
 
-def _write_requisitos_tdr(wb, resultados: list[ResultadoProfesional]) -> None:
+def _write_requisitos_tdr(
+    wb,
+    resultados: list[ResultadoProfesional],
+    requisitos_rtm_completo: list = None,
+) -> None:
     """
     Criterios TDR por cargo (Paso 1).
     Cols 1-6: autogeneradas. Cols 7-10: vacias para input manual del evaluador.
+
+    Args:
+        requisitos_rtm_completo: lista completa de RequisitoPersonal del TDR
+            (los 17 cargos). Si se pasa, muestra TODOS — incluso los cargos
+            del TDR que no tienen profesional postulando. Si no se pasa,
+            fallback al comportamiento legacy (solo cargos matched a un
+            profesional postulado, que pierde cargos sin candidato).
     """
     ws = wb.create_sheet("REQUISITOS_TDR")
     headers = [
@@ -260,14 +271,24 @@ def _write_requisitos_tdr(wb, resultados: list[ResultadoProfesional]) -> None:
     _aplicar_header(ws, headers)
     _set_column_widths(ws, [42, 18, 50, 32, 32, 32, 22, 22, 14, 16])
 
-    # Tomamos cada RequisitoPersonal unico (por cargo)
+    # Construir lista de requisitos (uno por cargo, sin duplicados).
+    # Preferir la lista completa del TDR si fue pasada; caer al legacy si no.
     requisitos_vistos = set()
+    requisitos_lista = []
+    if requisitos_rtm_completo:
+        for req in requisitos_rtm_completo:
+            if req and req.cargo and req.cargo not in requisitos_vistos:
+                requisitos_vistos.add(req.cargo)
+                requisitos_lista.append(req)
+    else:
+        for rp in resultados:
+            req = rp.requisito
+            if req and req.cargo and req.cargo not in requisitos_vistos:
+                requisitos_vistos.add(req.cargo)
+                requisitos_lista.append(req)
+
     fila = 2
-    for idx, rp in enumerate(resultados, start=1):
-        req = rp.requisito
-        if not req or req.cargo in requisitos_vistos:
-            continue
-        requisitos_vistos.add(req.cargo)
+    for idx, req in enumerate(requisitos_lista, start=1):
 
         # Col 1: cargo + profesion
         profs_str = " y/o ".join(req.profesiones_aceptadas or []) or ""
@@ -777,6 +798,7 @@ def write_report_lircay(
     proposal_date: Optional[date] = None,
     filename: str = "",
     sunat_por_ruc: Optional[dict] = None,
+    requisitos_rtm_completo: Optional[list] = None,
 ) -> Path:
     """
     Genera el Excel con formato Lircay (5 hojas).
@@ -790,6 +812,11 @@ def write_report_lircay(
                        Si se pasa, BD_EXPERIENCIAS llena Col 21/22/27 con
                        fecha de inscripcion y razon social. Si no se pasa,
                        esas columnas quedan vacias o con "No disponible".
+        requisitos_rtm_completo: lista completa de RequisitoPersonal del TDR
+                       (ej: 17 cargos). Si se pasa, REQUISITOS_TDR muestra
+                       TODOS los cargos del TDR — incluso los que no tienen
+                       profesional postulando. Si no, fallback a derivar de
+                       resultados (que pierde cargos sin candidato).
 
     Returns:
         Path al archivo Excel generado.
@@ -804,7 +831,7 @@ def write_report_lircay(
         del wb["Sheet"]
 
     _write_profesionales(wb, resultados)
-    _write_requisitos_tdr(wb, resultados)
+    _write_requisitos_tdr(wb, resultados, requisitos_rtm_completo)
     _write_bd_experiencias(wb, resultados, proposal_date, sunat_por_ruc)
     _write_analisis_rtm(wb, resultados)
     _write_resumen(wb, resultados, proposal_date, filename)
