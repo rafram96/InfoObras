@@ -35,4 +35,4 @@ claude_god/
 *.html
 
 # Crashdumps de Git Bash / Cygwin en Windows
-*.stackdump
+*.stackdumptests/*.pdf
