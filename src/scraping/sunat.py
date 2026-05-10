@@ -28,8 +28,11 @@ from __future__ import annotations
 import html as html_module
 import json
 import logging
+import os
+import random
 import re
 import secrets
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
@@ -52,6 +55,54 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+# Retry config — SUNAT a veces cierra conexiones en mass o devuelve 5xx.
+# Configurable via env.
+SUNAT_MAX_RETRIES = int(os.getenv("SUNAT_MAX_RETRIES", "3"))
+SUNAT_RETRY_BASE_DELAY = float(os.getenv("SUNAT_RETRY_BASE_DELAY", "0.5"))  # segundos
+SUNAT_THROTTLE_DELAY = float(os.getenv("SUNAT_THROTTLE_DELAY", "0.3"))  # entre RUCs
+
+
+def _request_with_retry(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    timeout: float,
+    description: str,
+    **kwargs,
+) -> Optional[requests.Response]:
+    """
+    Ejecuta una request con reintento + backoff exponencial + jitter.
+    Devuelve Response si tuvo éxito, None si todos los intentos fallaron.
+
+    Reintenta en:
+      - ConnectionError (RemoteDisconnected, etc.)
+      - Timeout
+      - HTTP 5xx
+    """
+    last_exc: Optional[Exception] = None
+    for intento in range(SUNAT_MAX_RETRIES):
+        try:
+            r = session.request(method, url, timeout=timeout, **kwargs)
+            if r.status_code < 500:
+                return r
+            last_exc = Exception(f"HTTP {r.status_code}")
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc
+
+        if intento < SUNAT_MAX_RETRIES - 1:
+            # Backoff exponencial con jitter: 0.5s → 1s → 2s + 0..0.3s random
+            delay = SUNAT_RETRY_BASE_DELAY * (2 ** intento) + random.uniform(0, 0.3)
+            logger.debug(
+                "SUNAT %s intento %d/%d fallo (%s), reintentando en %.1fs",
+                description, intento + 1, SUNAT_MAX_RETRIES, last_exc, delay,
+            )
+            time.sleep(delay)
+
+    logger.warning("SUNAT %s fallo tras %d intentos: %s",
+                   description, SUNAT_MAX_RETRIES, last_exc)
+    return None
 
 # Etiquetas del HTML de detalle SUNAT. Cada una tiene un patrón:
 #   <h4>Etiqueta:</h4>
@@ -327,15 +378,15 @@ def consultar_ruc(
         session.headers["User-Agent"] = USER_AGENT
 
     try:
-        # Bootstrap: GET para obtener cookies de sesión
-        try:
-            r_form = session.get(HOST + FORM_PATH, timeout=timeout)
-            r_form.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("SUNAT bootstrap fallo para RUC %s: %s", ruc, exc)
+        # Bootstrap con retry: GET para obtener cookies de sesion
+        r_form = _request_with_retry(
+            session, "GET", HOST + FORM_PATH,
+            timeout=timeout, description=f"bootstrap RUC {ruc}",
+        )
+        if r_form is None or r_form.status_code >= 400:
             return None
 
-        # POST con el RUC
+        # POST con retry
         body = {
             "accion": "consPorRuc",
             "razSoc": "",
@@ -356,17 +407,20 @@ def consultar_ruc(
             "Referer": HOST + FORM_PATH,
             "Origin": HOST,
         }
-        try:
-            r_search = session.post(
-                HOST + SEARCH_PATH, data=body, headers=headers, timeout=timeout
-            )
-            r_search.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("SUNAT search fallo para RUC %s: %s", ruc, exc)
+        r_search = _request_with_retry(
+            session, "POST", HOST + SEARCH_PATH,
+            data=body, headers=headers,
+            timeout=timeout, description=f"search RUC {ruc}",
+        )
+        if r_search is None or r_search.status_code >= 400:
             return None
 
         r_search.encoding = _detectar_encoding(r_search.headers.get("Content-Type", ""))
         html = r_search.text
+
+        # Throttling suave para no martillar SUNAT
+        if SUNAT_THROTTLE_DELAY > 0:
+            time.sleep(SUNAT_THROTTLE_DELAY)
     finally:
         if own_session:
             session.close()
@@ -424,11 +478,11 @@ def buscar_por_razon_social(
         session.headers["User-Agent"] = USER_AGENT
 
     try:
-        try:
-            r_form = session.get(HOST + FORM_PATH, timeout=timeout)
-            r_form.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("SUNAT bootstrap fallo: %s", exc)
+        r_form = _request_with_retry(
+            session, "GET", HOST + FORM_PATH,
+            timeout=timeout, description=f"bootstrap razon '{razon_social[:30]}'",
+        )
+        if r_form is None or r_form.status_code >= 400:
             return []
 
         body = {
@@ -451,17 +505,19 @@ def buscar_por_razon_social(
             "Referer": HOST + FORM_PATH,
             "Origin": HOST,
         }
-        try:
-            r_search = session.post(
-                HOST + SEARCH_PATH, data=body, headers=headers, timeout=timeout
-            )
-            r_search.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("SUNAT busqueda razon social fallo: %s", exc)
+        r_search = _request_with_retry(
+            session, "POST", HOST + SEARCH_PATH,
+            data=body, headers=headers,
+            timeout=timeout, description=f"search razon '{razon_social[:30]}'",
+        )
+        if r_search is None or r_search.status_code >= 400:
             return []
 
         r_search.encoding = _detectar_encoding(r_search.headers.get("Content-Type", ""))
         html = r_search.text
+
+        if SUNAT_THROTTLE_DELAY > 0:
+            time.sleep(SUNAT_THROTTLE_DELAY)
     finally:
         if own_session:
             session.close()

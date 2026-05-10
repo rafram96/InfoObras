@@ -718,17 +718,17 @@ def _write_resumen(
     total_experiencias = sum(len(rp.evaluaciones) for rp in resultados)
     _info("Total de experiencias evaluadas", total_experiencias)
 
-    # Conteos por severidad
-    severidades = {Severity.CRITICA: 0, Severity.OBSERVACION: 0, Severity.INFORMATIVA: 0}
+    # Conteos por severidad (Severity tiene solo CRITICAL y WARNING)
+    severidades = {Severity.CRITICAL: 0, Severity.WARNING: 0}
     for rp in resultados:
         for ev in rp.evaluaciones:
             for a in ev.alertas:
                 severidades[a.severity] = severidades.get(a.severity, 0) + 1
-        for a in rp.alertas_globales:
+        # `alertas_globales` puede no existir en todas las versiones del modelo
+        for a in getattr(rp, "alertas_globales", []) or []:
             severidades[a.severity] = severidades.get(a.severity, 0) + 1
-    _info("Alertas críticas", severidades.get(Severity.CRITICA, 0))
-    _info("Alertas de observación", severidades.get(Severity.OBSERVACION, 0))
-    _info("Alertas informativas", severidades.get(Severity.INFORMATIVA, 0))
+    _info("Alertas críticas", severidades.get(Severity.CRITICAL, 0))
+    _info("Alertas de observación", severidades.get(Severity.WARNING, 0))
 
     # Cumplimiento global
     total_eval = total_experiencias
