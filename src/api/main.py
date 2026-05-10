@@ -803,13 +803,18 @@ def _escribir_texto_tdr_md(
 @_with_job_logging
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
+    _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
     _check_cancelled(job_id)
     _update_job(
         job_id, status="running", progress_pct=1,
         progress_stage="Iniciando TDR",
         started_at=datetime.now(timezone.utc),
     )
-    _append_job_log(job_id, "Job iniciado — modo TDR")
+    _append_job_log(
+        job_id,
+        f"Job iniciado — modo TDR (pipeline "
+        f"{'3-CAPAS (F1 0.96/0.91)' if _3layer_active else 'TEXTUAL viejo'})",
+    )
 
     job_output_dir = OUTPUT_DIR / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
@@ -1042,7 +1047,12 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         # FASE 2: Extracción TDR (bases)
         # ════════════════════════════════════════════════════════════════
         _update_job(job_id, progress_pct=65, progress_stage="Extrayendo requisitos TDR")
-        _append_job_log(job_id, "FASE 2: Extracción TDR de bases")
+        _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
+        _append_job_log(
+            job_id,
+            f"FASE 2: Extracción TDR de bases — pipeline "
+            f"{'3-CAPAS (F1 0.96/0.91)' if _3layer_active else 'TEXTUAL viejo'}",
+        )
 
         import pdfplumber
         full_text = ""
