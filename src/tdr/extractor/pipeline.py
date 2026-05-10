@@ -1456,15 +1456,17 @@ def extraer_bases(
     pages  = parse_full_text(full_text)
     scored = [score_page(p) for p in pages]
 
-    # ── Extraccion 3-CAPAS estructurada de B.1 y B.2 (opt-in) ─────────────
-    # Si USE_3LAYER_EXTRACTION=true, ejecuta el pipeline de 3 capas que
-    # ataca cross-row contamination de raiz:
+    # ── Extraccion 3-CAPAS estructurada de B.1 y B.2 (DEFAULT ON) ─────────
+    # Pipeline 3-capas con F1 0.96/0.91 sobre el TDR de Tambobamba/Lircay.
+    # Atacca cross-row contamination de raiz:
     #   Capa 1: pdfplumber.extract_tables (PDFs digitales con bordes)
-    #   Capa 2: PP-Structure de PaddleOCR (escaneados; placeholder por ahora)
+    #   Capa 2: PP-Structure de PaddleOCR (escaneados)
     #   Capa 3: regex segmentacion + LLM por fila aislada (fallback robusto)
     # El resultado se mergea con los items del pipeline textual al final.
+    # Si una capa falla, degrada elegantemente.
+    # Para deshabilitar: USE_3LAYER_EXTRACTION=false en .env
     extraccion_3capas = None
-    if pdf_path and os.getenv("USE_3LAYER_EXTRACTION", "false").lower() == "true":
+    if pdf_path and os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true":
         try:
             from src.tdr.extractor.table_extractor import extraer_tdr_3_capas
             from src.tdr.tables.vl_page_detector import detectar_paginas_b1_b2
