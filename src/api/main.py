@@ -1920,6 +1920,57 @@ async def cruce_infoobras_job(
     }
 
 
+@app.post("/api/admin/sunat/purge-cache", tags=["Admin"])
+async def admin_purge_sunat_cache(only_misses: bool = True):
+    """
+    Borra entries del cache SUNAT.
+
+    Args:
+        only_misses: si True (default), solo borra RUCs con found=False
+                     (negative cache — RUCs que fueron rechazados por SUNAT).
+                     Util cuando TLS o conexion fallaron y dejaron entries
+                     "no encontrado" cacheados por 1 dia.
+                     Si False, borra TODO el cache (incluso hits validos).
+
+    Returns:
+        {ok, deleted}
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            if only_misses:
+                cur.execute("DELETE FROM sunat_cache WHERE found = FALSE")
+            else:
+                cur.execute("DELETE FROM sunat_cache")
+            deleted = cur.rowcount
+    logger.info("Cache SUNAT purgado: %d entries borradas (only_misses=%s)",
+                deleted, only_misses)
+    return {"ok": True, "deleted": deleted, "only_misses": only_misses}
+
+
+@app.get("/api/admin/sunat/cache-stats", tags=["Admin"])
+async def admin_sunat_cache_stats():
+    """Estadisticas del cache SUNAT: cuantos hits / misses / total."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN found THEN 1 ELSE 0 END) AS hits,
+                    SUM(CASE WHEN NOT found THEN 1 ELSE 0 END) AS misses,
+                    MIN(fetched_at) AS oldest,
+                    MAX(fetched_at) AS newest
+                FROM sunat_cache
+            """)
+            row = cur.fetchone() or {}
+    return {
+        "total": row.get("total", 0),
+        "hits": row.get("hits", 0),
+        "misses": row.get("misses", 0),
+        "oldest": str(row.get("oldest")) if row.get("oldest") else None,
+        "newest": str(row.get("newest")) if row.get("newest") else None,
+    }
+
+
 @app.post("/api/jobs/{extraction_job_id}/cruce-sunat", tags=["Evaluation"])
 async def cruce_sunat_job(extraction_job_id: str):
     """
