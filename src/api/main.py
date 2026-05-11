@@ -237,6 +237,50 @@ app.add_middleware(
 _executor = ThreadPoolExecutor(max_workers=1)
 # Jobs cancelados — los runners revisan este set y abortan si encuentran su ID
 _cancelled_jobs: set[str] = set()
+# Subprocesses motor-OCR activos por job_id — para poder terminarlos cuando
+# el usuario hace DELETE en un job que esta corriendo. Sin esto, el subprocess
+# sigue activo hasta terminar el PDF (~40 min), bloqueando el unico worker
+# del executor y haciendo que los siguientes jobs queden en cola permanente.
+import threading as _threading
+_active_subprocesses: dict[str, "subprocess.Popen"] = {}
+_active_subprocesses_lock = _threading.Lock()
+
+
+def _kill_subprocess_tree(proc: "subprocess.Popen") -> bool:
+    """
+    Mata el proceso y TODOS sus hijos (paddle_worker, qwen_worker, etc).
+    Cross-platform: usa taskkill /T en Windows, terminate+kill en Unix.
+    Devuelve True si efectivamente termino el proceso.
+    """
+    if proc.poll() is not None:
+        return True  # ya termino solo
+
+    import platform
+    try:
+        if platform.system() == "Windows":
+            # /T mata el arbol completo de procesos, /F es force.
+            # Necesario porque motor-OCR lanza paddle_worker.py como sub-sub-proceso.
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                check=False, capture_output=True, timeout=10,
+            )
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+    except Exception as exc:
+        logger.warning("Error matando subprocess tree PID %s: %s", proc.pid, exc)
+        return False
+
+    # Confirmar
+    try:
+        proc.wait(timeout=3)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
 
 
 # ── DB (PostgreSQL) ──────────────────────────────────────────────────────────
@@ -485,18 +529,35 @@ def _invocar_wrapper(
             env=env,
         )
 
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            logger.info("Job %s | %s", job_id, line)
-            if parse_progress:
-                try:
-                    _parse_progress(job_id, line)
-                except Exception:
-                    pass
+        # Registrar para que DELETE pueda matar el subprocess si el usuario
+        # cancela el job mientras corre (sino sigue corriendo ~40 min en
+        # background bloqueando el unico worker del ThreadPoolExecutor).
+        with _active_subprocesses_lock:
+            _active_subprocesses[job_id] = process
 
-        process.wait(timeout=9000)
+        try:
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                logger.info("Job %s | %s", job_id, line)
+                if parse_progress:
+                    try:
+                        _parse_progress(job_id, line)
+                    except Exception:
+                        pass
+
+            process.wait(timeout=9000)
+        finally:
+            # Desregistrar siempre, exito o fallo
+            with _active_subprocesses_lock:
+                _active_subprocesses.pop(job_id, None)
+
+        # Si fue cancelado mientras corria, el subprocess murio con returncode
+        # != 0 (porque lo matamos) pero NO queremos seguir procesando el job.
+        if job_id in _cancelled_jobs:
+            raise RuntimeError("Job cancelado por el usuario")
+
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, MOTOR_OCR_WRAPPER)
 
@@ -2736,12 +2797,30 @@ async def delete_job(job_id: str):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "Job no encontrado")
-            # Si el job está pending o running, marcarlo como cancelado
-            # para que el worker lo aborte cuando lo tome o en su próximo checkpoint
+            # Si el job esta pending o running, marcarlo como cancelado
+            # para que el worker lo aborte
             if row[1] in ("pending", "running"):
                 _cancelled_jobs.add(job_id)
                 logger.info("Job %s: marcado como cancelado", job_id)
             cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+
+    # CRITICAL: si el job tiene un subprocess motor-OCR corriendo, matarlo
+    # AHORA (antes de borrar archivos). Sin esto, el subprocess sigue
+    # leyendo imagenes y procesando ~40 min mas, bloqueando el executor
+    # para los siguientes jobs.
+    with _active_subprocesses_lock:
+        proc = _active_subprocesses.pop(job_id, None)
+    if proc is not None and proc.poll() is None:
+        logger.info(
+            "Job %s: matando subprocess motor-OCR activo (PID %s)",
+            job_id, proc.pid,
+        )
+        killed = _kill_subprocess_tree(proc)
+        logger.info(
+            "Job %s: subprocess %s",
+            job_id, "terminado" if killed else "NO respondio al kill",
+        )
+
     # Limpiar artefactos en disco: .md del OCR, PDFs preservados y log dedicado
     output_dir = OUTPUT_DIR / job_id
     if output_dir.exists():
