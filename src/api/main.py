@@ -608,6 +608,319 @@ def _ejecutar_ocr_con_fallback(
 
 
 # ── Job runner ────────────────────────────────────────────────────────────────
+def _pipeline_extraccion_profesionales(
+    job_id: str,
+    pdf_path: Path,
+    pages: Optional[list],
+    force_motor_ocr: bool,
+    *,
+    pct_ocr_start: int = 1,
+    pct_ocr_done: int = 90,
+    pct_llm_done: int = 99,
+    persist_intermediate: bool = True,
+) -> dict:
+    """
+    Pipeline IDENTICO para extraction-only y full-job.
+
+    Hace OCR (motor-OCR subprocess) + extraccion LLM (Pasos 2-3) y devuelve
+    el extraction_result dict completo con secciones llenas con profesional
+    y experiencias.
+
+    NO toca status del job (running/done/error) — eso es del caller.
+    Si persist_intermediate=True, guarda result tras OCR antes del LLM.
+
+    Args:
+        pct_ocr_start: progress_pct cuando arranca OCR (default 1)
+        pct_ocr_done: progress_pct cuando termina OCR / arranca LLM (default 90)
+        pct_llm_done: progress_pct cuando termina LLM (default 99)
+        persist_intermediate: si True, _update_job(result=...) tras OCR
+            para que el panel vea las secciones aunque el LLM aun no termine.
+
+    Raises lo que sea que fallen los subprocess/LLM — el caller decide.
+    """
+    _set_phase(job_id, JobPhase.OCR)
+    _update_job(job_id, progress_pct=pct_ocr_start, progress_stage="OCR propuesta")
+
+    job_output_dir = str(OUTPUT_DIR / job_id)
+    Path(job_output_dir).mkdir(parents=True, exist_ok=True)
+
+    mode = _decidir_mode(job_id, pdf_path, force_motor_ocr)
+    logger.info("Job %s: invocando wrapper mode=%s", job_id, mode)
+    _append_job_log(job_id, f"Iniciando wrapper motor-OCR (mode={mode})")
+
+    raw = _ejecutar_ocr_con_fallback(
+        job_id, pdf_path, pages, job_output_dir, mode,
+    )
+    doc = raw["doc"]
+    extraction_result = {
+        "total_pages": doc["total_pages"],
+        "pages_paddle": doc.get("pages_paddle", 0),
+        "pages_qwen": doc.get("pages_qwen", 0),
+        "pages_pdfplumber": doc.get("pages_pdfplumber", 0),
+        "pages_error": doc["pages_error"],
+        "conf_promedio": round(doc["conf_promedio_documento"], 3),
+        "tiempo_total": round(doc["tiempo_total"], 1),
+        "engine": doc.get("engine", "motor_ocr"),
+        "secciones": [
+            {
+                "index": s["section_index"],
+                "cargo": s["cargo"],
+                "cargo_raw": s.get("cargo_raw", s["cargo"]),
+                "numero": s["numero"],
+                "total_pages": s["total_pages"],
+                "page_numbers": s.get("page_numbers", []),
+                "bloques": s.get("bloques_origen", []),
+                "es_tipo_b": s.get("es_tipo_b", False),
+            }
+            for s in raw["secciones"]
+        ],
+    }
+
+    logger.info(
+        "Job %s OCR completado (engine=%s): %d págs, %d profesionales",
+        job_id, extraction_result["engine"],
+        doc["total_pages"], len(raw["secciones"]),
+    )
+    _append_job_log(
+        job_id,
+        f"OCR completado (engine={extraction_result['engine']}) — "
+        f"{doc['total_pages']} págs, {len(raw['secciones'])} profesionales",
+    )
+
+    # ── Extraccion LLM (Pasos 2-3) ──────────────────────────────────────
+    if _EXTRACTION_AVAILABLE:
+        _set_phase(job_id, JobPhase.EXTRACTION)
+        _update_job(
+            job_id,
+            progress_pct=pct_ocr_done,
+            progress_stage="Buscando archivos de segmentación",
+            **(
+                {"result": json.dumps(extraction_result, ensure_ascii=False)}
+                if persist_intermediate else {}
+            ),
+        )
+
+        # Buscar archivos especificos
+        all_md = list(Path(job_output_dir).rglob("*.md"))
+        prof_files = [
+            f for f in all_md
+            if "_profesionales_" in f.name.lower()
+            and "_metricas_" not in f.name.lower()
+            and "_segmentacion_" not in f.name.lower()
+            and "_texto_" not in f.name.lower()
+        ]
+        texto_files = [f for f in all_md if "_texto_" in f.name.lower()]
+
+        logger.info(
+            "Job %s: archivos encontrados — prof=%s, texto=%s",
+            job_id, [f.name for f in prof_files], [f.name for f in texto_files],
+        )
+
+        if prof_files and texto_files:
+            try:
+                blocks = parse_professional_blocks(prof_files[0], texto_files[0])
+                total_blocks = len(blocks)
+                logger.info(
+                    "Job %s: iniciando extracción de %d profesionales",
+                    job_id, total_blocks,
+                )
+                _append_job_log(
+                    job_id,
+                    f"Extracción LLM iniciada — {total_blocks} profesionales",
+                )
+
+                pct_span = max(pct_llm_done - pct_ocr_done, 1)
+                for i, block in enumerate(blocks):
+                    pct = pct_ocr_done + int((i / max(total_blocks, 1)) * pct_span)
+                    _update_job(
+                        job_id, progress_pct=pct,
+                        progress_stage=f"Extrayendo profesional {i + 1}/{total_blocks}",
+                    )
+
+                    try:
+                        extraction = extract_block(block)
+                        n_exp = len(extraction.get("experiencias", []))
+                        prof_name = (
+                            (extraction.get("profesional") or {}).get("nombre")
+                            or block.cargo
+                        )
+                        _append_job_log(
+                            job_id,
+                            f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — "
+                            f"{prof_name[:40]} ({n_exp} exp)",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Job %s: extracción falló bloque %d (%s): %s",
+                            job_id, block.index, block.cargo, exc,
+                        )
+                        _append_job_log(
+                            job_id,
+                            f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — "
+                            f"ERROR: {str(exc)[:80]}",
+                        )
+                        extraction = {
+                            "profesional": {
+                                "_cargo": block.cargo,
+                                "_needs_review": True,
+                            },
+                            "experiencias": [],
+                            "_needs_review": True,
+                        }
+
+                    for seccion in extraction_result["secciones"]:
+                        if seccion["index"] == block.index:
+                            seccion["profesional"] = extraction.get("profesional")
+                            seccion["experiencias"] = extraction.get(
+                                "experiencias", []
+                            )
+                            seccion["_needs_review"] = extraction.get(
+                                "_needs_review", False
+                            )
+                            break
+
+                logger.info(
+                    "Job %s: extracción completada para %d profesionales",
+                    job_id, total_blocks,
+                )
+                _append_job_log(
+                    job_id,
+                    f"Extracción LLM completada — {total_blocks} profesionales",
+                )
+            except Exception as e:
+                logger.exception(
+                    "Job %s: error en fase de extracción — guardando OCR raw",
+                    job_id,
+                )
+                _append_job_log(job_id, f"ERROR en extracción LLM: {e}")
+        else:
+            logger.warning(
+                "Job %s: archivos .md no encontrados en %s — omitiendo extracción",
+                job_id, job_output_dir,
+            )
+            _append_job_log(
+                job_id,
+                f"Archivos .md no encontrados — extracción LLM omitida",
+            )
+
+    return extraction_result
+
+
+def _pipeline_extraccion_tdr(
+    job_id: str,
+    pdf_path: Path,
+    *,
+    pct_start: int = 3,
+    pct_text_done: int = 30,
+    pct_llm_done: int = 90,
+) -> dict:
+    """
+    Pipeline IDENTICO para tdr-only y full-job.
+
+    Hace: pdfplumber (con fallback a motor-OCR si <50 chars/pag), escribe
+    .md de texto TDR para debug viewer, llama a extraer_bases (3-capas
+    activo via env), devuelve dict con rtm_personal, rtm_postor,
+    factores_evaluacion.
+
+    NO toca status del job — eso es del caller.
+
+    Args:
+        pct_start: progress al arrancar extraccion de texto
+        pct_text_done: progress al terminar texto / arrancar LLM
+        pct_llm_done: progress al terminar LLM extraer_bases
+    """
+    _set_phase(job_id, JobPhase.TDR)
+    _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
+    _append_job_log(
+        job_id,
+        f"TDR: pipeline "
+        f"{'3-CAPAS (F1 0.96/0.91)' if _3layer_active else 'TEXTUAL viejo'}",
+    )
+
+    _update_job(job_id, progress_pct=pct_start, progress_stage="Extrayendo texto TDR")
+
+    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
+    import pdfplumber
+    paginas_texto: dict[int, str] = {}
+    num_pages = 0
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        num_pages = len(pdf.pages)
+        for page in pdf.pages:
+            paginas_texto[page.page_number] = page.extract_text() or ""
+
+    full_text = "\n".join(
+        f"--- Página {pn} ---\n{paginas_texto[pn]}"
+        for pn in sorted(paginas_texto)
+    )
+
+    chars_total = sum(len(t.strip()) for t in paginas_texto.values())
+    chars_per_page = chars_total / max(num_pages, 1)
+    _append_job_log(
+        job_id,
+        f"pdfplumber TDR: {num_pages} págs, {int(chars_per_page)} chars/pág promedio",
+    )
+
+    # Guardar .md de texto TDR para debug viewer (data/ocr_outputs/{job_id}/)
+    try:
+        _escribir_texto_tdr_md(
+            job_output_dir, pdf_path, paginas_texto, chars_per_page,
+            engine_label="pdfplumber",
+        )
+    except Exception as md_err:
+        logger.warning("No se pudo escribir texto TDR .md: %s", md_err)
+
+    # Fallback a motor-OCR si el PDF de bases es escaneado
+    if chars_per_page < 50:
+        _append_job_log(job_id, "TDR escaneado — invocando motor-OCR")
+        _update_job(
+            job_id, progress_pct=pct_start + 5,
+            progress_stage="TDR escaneado — ejecutando OCR",
+        )
+        try:
+            from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
+            full_text = invoke_motor_ocr(
+                str(pdf_path), output_dir=str(job_output_dir),
+                log_path=_job_logs_mod.motor_ocr_log_path(job_id),
+            )
+            _append_job_log(job_id, f"motor-OCR TDR completado — {len(full_text)} chars")
+        except Exception as ocr_err:
+            _append_job_log(job_id, f"ERROR motor-OCR TDR: {ocr_err}")
+            raise RuntimeError(
+                f"PDF de bases escaneado y motor-OCR falló: {ocr_err}"
+            ) from ocr_err
+
+    _update_job(job_id, progress_pct=pct_text_done, progress_stage="Analizando requisitos TDR")
+    _append_job_log(job_id, "Llamando a extraer_bases()...")
+
+    # Progreso gradual durante las llamadas LLM internas (sin granularidad propia).
+    with _smooth_progress(job_id, start_pct=pct_text_done, end_pct=pct_llm_done, interval_sec=6.0):
+        tdr_result = extraer_bases(
+            full_text,
+            nombre_archivo=pdf_path.name,
+            pdf_path=str(pdf_path),
+        )
+
+    result = {
+        "rtm_personal": tdr_result.get("rtm_personal", []),
+        "rtm_postor": tdr_result.get("rtm_postor", []),
+        "factores_evaluacion": tdr_result.get("factores_evaluacion", []),
+        "total_cargos": len(tdr_result.get("rtm_personal", [])),
+        "total_factores": len(tdr_result.get("factores_evaluacion", [])),
+    }
+    _append_job_log(
+        job_id,
+        f"TDR completado — {result['total_cargos']} cargos, "
+        f"{result['total_factores']} factores",
+    )
+    logger.info(
+        "Job %s (TDR helper): %d cargos, %d factores",
+        job_id, result["total_cargos"], result["total_factores"],
+    )
+    return result
+
+
 @_with_job_logging
 def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr: bool = False) -> None:
     _check_cancelled(job_id)
@@ -618,155 +931,13 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr
     )
     _append_job_log(job_id, "Job iniciado — modo extracción")
 
-    job_output_dir = str(OUTPUT_DIR / job_id)
-    Path(job_output_dir).mkdir(parents=True, exist_ok=True)
-
     try:
-        mode = _decidir_mode(job_id, pdf_path, force_motor_ocr)
-        logger.info("Job %s: invocando wrapper mode=%s", job_id, mode)
-        _append_job_log(job_id, f"Iniciando wrapper motor-OCR (mode={mode})")
-
-        raw = _ejecutar_ocr_con_fallback(
-            job_id, pdf_path, pages, job_output_dir, mode,
+        # Pipeline core (compartido con _run_full_job vía helper)
+        result = _pipeline_extraccion_profesionales(
+            job_id, pdf_path, pages, force_motor_ocr,
+            pct_ocr_start=1, pct_ocr_done=91, pct_llm_done=99,
+            persist_intermediate=True,
         )
-
-        doc = raw["doc"]
-        result = {
-            "total_pages": doc["total_pages"],
-            "pages_paddle": doc.get("pages_paddle", 0),
-            "pages_qwen": doc.get("pages_qwen", 0),
-            "pages_pdfplumber": doc.get("pages_pdfplumber", 0),
-            "pages_error": doc["pages_error"],
-            "conf_promedio": round(doc["conf_promedio_documento"], 3),
-            "tiempo_total": round(doc["tiempo_total"], 1),
-            "engine": doc.get("engine", "motor_ocr"),
-            "secciones": [
-                {
-                    "index": s["section_index"],
-                    "cargo": s["cargo"],
-                    "cargo_raw": s.get("cargo_raw", s["cargo"]),
-                    "numero": s["numero"],
-                    "total_pages": s["total_pages"],
-                    "page_numbers": s.get("page_numbers", []),
-                    "bloques": s.get("bloques_origen", []),
-                    "es_tipo_b": s.get("es_tipo_b", False),
-                }
-                for s in raw["secciones"]
-            ],
-        }
-        logger.info(
-            "Job %s OCR completado (engine=%s): %d págs, %d profesionales",
-            job_id,
-            result["engine"],
-            doc["total_pages"],
-            len(raw["secciones"]),
-        )
-
-        _append_job_log(
-            job_id,
-            f"OCR completado (engine={result['engine']}) — "
-            f"{doc['total_pages']} págs, {len(raw['secciones'])} profesionales",
-        )
-
-        # ── Fase 2: Extracción LLM (Pasos 2-3) ─────────────────────────────
-        if _EXTRACTION_AVAILABLE:
-            _update_job(
-                job_id,
-                progress_pct=91,
-                progress_stage="Buscando archivos de segmentación",
-                result=json.dumps(result, ensure_ascii=False),
-            )
-
-            # Buscar archivos específicos — el prefijo contiene "Profesionales"
-            # así que hay que filtrar para que no matchee métricas/segmentación
-            all_md = list(Path(job_output_dir).rglob("*.md"))
-            prof_files = [f for f in all_md if "_profesionales_" in f.name.lower() and "_metricas_" not in f.name.lower() and "_segmentacion_" not in f.name.lower() and "_texto_" not in f.name.lower()]
-            texto_files = [f for f in all_md if "_texto_" in f.name.lower()]
-
-            logger.info(
-                "Job %s: archivos encontrados — prof=%s, texto=%s",
-                job_id,
-                [f.name for f in prof_files],
-                [f.name for f in texto_files],
-            )
-
-            if prof_files and texto_files:
-                try:
-                    blocks = parse_professional_blocks(prof_files[0], texto_files[0])
-                    total_blocks = len(blocks)
-                    logger.info(
-                        "Job %s: iniciando extracción de %d profesionales",
-                        job_id,
-                        total_blocks,
-                    )
-                    _append_job_log(job_id, f"Extracción LLM iniciada — {total_blocks} profesionales")
-
-                    for i, block in enumerate(blocks):
-                        pct = 92 + int((i / max(total_blocks, 1)) * 7)
-                        _update_job(
-                            job_id,
-                            progress_pct=pct,
-                            progress_stage=f"Extrayendo profesional {i + 1}/{total_blocks}",
-                        )
-
-                        try:
-                            extraction = extract_block(block)
-                            n_exp = len(extraction.get("experiencias", []))
-                            prof_name = (extraction.get("profesional") or {}).get("nombre") or block.cargo
-                            _append_job_log(
-                                job_id,
-                                f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — {prof_name[:40]} ({n_exp} exp)",
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Job %s: extracción falló para bloque %d (%s): %s",
-                                job_id,
-                                block.index,
-                                block.cargo,
-                                exc,
-                            )
-                            _append_job_log(
-                                job_id,
-                                f"  [{i+1}/{total_blocks}] {block.cargo[:40]} — ERROR: {str(exc)[:80]}",
-                            )
-                            extraction = {
-                                "profesional": {
-                                    "_cargo": block.cargo,
-                                    "_needs_review": True,
-                                },
-                                "experiencias": [],
-                                "_needs_review": True,
-                            }
-
-                        for seccion in result["secciones"]:
-                            if seccion["index"] == block.index:
-                                seccion["profesional"] = extraction.get("profesional")
-                                seccion["experiencias"] = extraction.get(
-                                    "experiencias", []
-                                )
-                                seccion["_needs_review"] = extraction.get(
-                                    "_needs_review", False
-                                )
-                                break
-
-                    logger.info(
-                        "Job %s: extracción completada para %d profesionales",
-                        job_id,
-                        total_blocks,
-                    )
-                    _append_job_log(job_id, f"Extracción LLM completada — {total_blocks} profesionales")
-                except Exception as e:
-                    logger.exception(
-                        "Job %s: error en fase de extracción — guardando resultado OCR",
-                        job_id,
-                    )
-                    _append_job_log(job_id, f"ERROR en extracción LLM: {e}")
-            else:
-                logger.warning(
-                    "Job %s: archivos .md no encontrados en %s — omitiendo extracción",
-                    job_id,
-                    job_output_dir,
-                )
 
         _update_job(
             job_id,
@@ -888,117 +1059,21 @@ def _escribir_texto_tdr_md(
 @_with_job_logging
 def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
     """Ejecuta extracción TDR (Paso 1) sobre un PDF de bases."""
-    _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
     _check_cancelled(job_id)
     _update_job(
         job_id, status="running", progress_pct=1,
         progress_stage="Iniciando TDR",
         started_at=datetime.now(timezone.utc),
     )
-    _set_phase(job_id, JobPhase.TDR)
-    _append_job_log(
-        job_id,
-        f"Job iniciado — modo TDR (pipeline "
-        f"{'3-CAPAS (F1 0.96/0.91)' if _3layer_active else 'TEXTUAL viejo'})",
-    )
-
-    job_output_dir = OUTPUT_DIR / job_id
-    job_output_dir.mkdir(parents=True, exist_ok=True)
+    _append_job_log(job_id, "Job iniciado — modo TDR")
 
     try:
-        # ── Paso 1: Extraer texto del PDF de bases ──────────────────────────
-        _update_job(job_id, progress_pct=3, progress_stage="Extrayendo texto del PDF")
-        _append_job_log(job_id, "Extrayendo texto con pdfplumber...")
-
-        import pdfplumber
-        paginas_texto: dict[int, str] = {}
-        num_pages = 0
-        with pdfplumber.open(str(pdf_path)) as pdf:
-            num_pages = len(pdf.pages)
-            for page in pdf.pages:
-                paginas_texto[page.page_number] = page.extract_text() or ""
-
-        full_text = "\n".join(
-            f"--- Página {pn} ---\n{paginas_texto[pn]}"
-            for pn in sorted(paginas_texto)
+        # Pipeline core (compartido con _run_full_job vía helper)
+        tdr_core = _pipeline_extraccion_tdr(
+            job_id, pdf_path,
+            pct_start=3, pct_text_done=30, pct_llm_done=90,
         )
-
-        chars_total = sum(len(t.strip()) for t in paginas_texto.values())
-        chars_per_page = chars_total / max(num_pages, 1)
-        _append_job_log(
-            job_id,
-            f"pdfplumber: {num_pages} páginas, {int(chars_per_page)} chars/pág promedio",
-        )
-        _update_job(job_id, progress_pct=8, progress_stage="Texto extraído")
-
-        # Guardar texto extraído por pdfplumber como .md para el debug viewer
-        try:
-            _escribir_texto_tdr_md(
-                job_output_dir,
-                pdf_path,
-                paginas_texto,
-                chars_per_page,
-                engine_label="pdfplumber",
-            )
-        except Exception as md_err:
-            logger.warning("No se pudo escribir texto TDR .md: %s", md_err)
-
-        if chars_per_page < 50:
-            _append_job_log(job_id, "Texto insuficiente — PDF probablemente escaneado")
-            _update_job(
-                job_id, progress_pct=12,
-                progress_stage="PDF escaneado — ejecutando OCR",
-            )
-            # Fallback a motor-OCR (mismo flujo que _run_job pero solo para texto)
-            try:
-                from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
-                _append_job_log(job_id, "Invocando motor-OCR para bases escaneadas...")
-                full_text = invoke_motor_ocr(
-                    str(pdf_path), output_dir=str(job_output_dir),
-                    log_path=_job_logs_mod.motor_ocr_log_path(job_id),
-                )
-                _append_job_log(job_id, f"motor-OCR completado — {len(full_text)} chars")
-            except Exception as ocr_err:
-                _append_job_log(job_id, f"ERROR motor-OCR: {ocr_err}")
-                raise RuntimeError(
-                    f"PDF escaneado y motor-OCR falló: {ocr_err}"
-                ) from ocr_err
-
-        # ── Paso 2: Extraer requisitos RTM ──────────────────────────────────
-        _update_job(job_id, progress_pct=30, progress_stage="Analizando requisitos TDR")
-        _append_job_log(job_id, "Llamando a extraer_bases()...")
-
-        # Progreso gradual 30→85 durante las llamadas LLM internas de extraer_bases
-        # (que no reportan granularidad propia). Interval 6s, step 1% → ~5.5 min para
-        # llegar al tope. Si termina antes, se queda en donde este y sigue con 90+.
-        with _smooth_progress(job_id, start_pct=30, end_pct=85, interval_sec=6.0):
-            tdr_result = extraer_bases(
-                full_text,
-                nombre_archivo=pdf_path.name,
-                pdf_path=str(pdf_path),
-            )
-
-        _update_job(job_id, progress_pct=90, progress_stage="Procesando resultados TDR")
-
-        # Estructurar resultado
-        result = {
-            "job_type": "tdr",
-            "rtm_personal": tdr_result.get("rtm_personal", []),
-            "rtm_postor": tdr_result.get("rtm_postor", []),
-            "factores_evaluacion": tdr_result.get("factores_evaluacion", []),
-            "total_cargos": len(tdr_result.get("rtm_personal", [])),
-            "total_factores": len(tdr_result.get("factores_evaluacion", [])),
-        }
-
-        _append_job_log(
-            job_id,
-            f"TDR completado — {result['total_cargos']} cargos, "
-            f"{result['total_factores']} factores",
-        )
-        logger.info(
-            "Job %s (TDR): completado — %d cargos, %d factores",
-            job_id, result["total_cargos"], result["total_factores"],
-        )
+        result = {"job_type": "tdr", **tdr_core}
 
         _update_job(
             job_id,
@@ -1052,126 +1127,28 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
     try:
         # ════════════════════════════════════════════════════════════════
         # FASE 1: OCR + Extracción de profesionales (propuesta)
+        # USA EL MISMO PIPELINE que _run_job (sin diferencias)
         # ════════════════════════════════════════════════════════════════
-        _set_phase(job_id, JobPhase.OCR)
         _append_job_log(job_id, "FASE 1: OCR + Extracción de propuesta")
-        _update_job(job_id, progress_pct=2, progress_stage="OCR propuesta")
-
-        job_output_dir = str(OUTPUT_DIR / job_id)
-        Path(job_output_dir).mkdir(parents=True, exist_ok=True)
-
-        mode = _decidir_mode(job_id, pdf_path, force_motor_ocr)
-        logger.info("Job %s (full): invocando wrapper mode=%s", job_id, mode)
-
-        raw = _ejecutar_ocr_con_fallback(
-            job_id, pdf_path, pages, job_output_dir, mode,
+        extraction_result = _pipeline_extraccion_profesionales(
+            job_id, pdf_path, pages, force_motor_ocr,
+            pct_ocr_start=2, pct_ocr_done=50, pct_llm_done=62,
+            persist_intermediate=False,  # full job persiste al final
         )
-
-        doc = raw["doc"]
-        extraction_result = {
-            "total_pages": doc["total_pages"],
-            "pages_paddle": doc.get("pages_paddle", 0),
-            "pages_qwen": doc.get("pages_qwen", 0),
-            "pages_pdfplumber": doc.get("pages_pdfplumber", 0),
-            "pages_error": doc["pages_error"],
-            "conf_promedio": round(doc["conf_promedio_documento"], 3),
-            "tiempo_total": round(doc["tiempo_total"], 1),
-            "engine": doc.get("engine", "motor_ocr"),
-            "secciones": [
-                {
-                    "index": s["section_index"],
-                    "cargo": s["cargo"],
-                    "cargo_raw": s.get("cargo_raw", s["cargo"]),
-                    "numero": s["numero"],
-                    "total_pages": s["total_pages"],
-                    "page_numbers": s.get("page_numbers", []),
-                    "bloques": s.get("bloques_origen", []),
-                    "es_tipo_b": s.get("es_tipo_b", False),
-                }
-                for s in raw["secciones"]
-            ],
-        }
-
-        _append_job_log(
-            job_id,
-            f"OCR completado (engine={extraction_result['engine']}) — "
-            f"{doc['total_pages']} págs, {len(raw['secciones'])} profesionales",
-        )
-
-        # Extracción LLM (Pasos 2-3)
-        if _EXTRACTION_AVAILABLE:
-            _set_phase(job_id, JobPhase.EXTRACTION)
-            _update_job(job_id, progress_pct=40, progress_stage="Extrayendo profesionales (LLM)")
-            _append_job_log(job_id, "Extracción LLM — Pasos 2-3")
-
-            all_md = list(Path(job_output_dir).rglob("*.md"))
-            prof_files = [f for f in all_md if "_profesionales_" in f.name.lower() and "_metricas_" not in f.name.lower() and "_segmentacion_" not in f.name.lower() and "_texto_" not in f.name.lower()]
-            texto_files = [f for f in all_md if "_texto_" in f.name.lower()]
-
-            if prof_files and texto_files:
-                blocks = parse_professional_blocks(prof_files[0], texto_files[0])
-                total_blocks = len(blocks)
-                _append_job_log(job_id, f"Extrayendo {total_blocks} profesionales")
-
-                for i, block in enumerate(blocks):
-                    pct = 40 + int((i / max(total_blocks, 1)) * 20)
-                    _update_job(job_id, progress_pct=pct, progress_stage=f"Profesional {i+1}/{total_blocks}")
-
-                    try:
-                        extraction = extract_block(block)
-                    except Exception as exc:
-                        logger.warning("Job %s: extracción falló bloque %d: %s", job_id, block.index, exc)
-                        extraction = {"profesional": {"_cargo": block.cargo, "_needs_review": True}, "experiencias": [], "_needs_review": True}
-
-                    for seccion in extraction_result["secciones"]:
-                        if seccion["index"] == block.index:
-                            seccion["profesional"] = extraction.get("profesional")
-                            seccion["experiencias"] = extraction.get("experiencias", [])
-                            seccion["_needs_review"] = extraction.get("_needs_review", False)
-                            break
 
         _check_cancelled(job_id)
 
         # ════════════════════════════════════════════════════════════════
         # FASE 2: Extracción TDR (bases)
+        # USA EL MISMO PIPELINE que _run_tdr_job (sin diferencias)
         # ════════════════════════════════════════════════════════════════
-        _set_phase(job_id, JobPhase.TDR)
-        _update_job(job_id, progress_pct=65, progress_stage="Extrayendo requisitos TDR")
-        _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
-        _append_job_log(
-            job_id,
-            f"FASE 2: Extracción TDR de bases — pipeline "
-            f"{'3-CAPAS (F1 0.96/0.91)' if _3layer_active else 'TEXTUAL viejo'}",
+        _append_job_log(job_id, "FASE 2: Extracción TDR de bases")
+        tdr_core = _pipeline_extraccion_tdr(
+            job_id, bases_path,
+            pct_start=63, pct_text_done=67, pct_llm_done=80,
         )
-
-        import pdfplumber
-        full_text = ""
-        num_pages = 0
-        with pdfplumber.open(str(bases_path)) as pdf:
-            num_pages = len(pdf.pages)
-            for page in pdf.pages:
-                text = page.extract_text() or ""
-                full_text += f"\n--- Página {page.page_number} ---\n{text}"
-
-        chars_per_page = len(full_text.strip()) / max(num_pages, 1)
-        _append_job_log(job_id, f"Bases: {num_pages} págs, {int(chars_per_page)} chars/pág")
-
-        if chars_per_page < 50:
-            _append_job_log(job_id, "Bases escaneadas — invocando motor-OCR")
-            try:
-                from src.tdr.clients.motor_ocr_client import invoke_motor_ocr
-                full_text = invoke_motor_ocr(
-                    str(bases_path), output_dir=str(OUTPUT_DIR),
-                    log_path=_job_logs_mod.motor_ocr_log_path(job_id),
-                )
-            except Exception as ocr_err:
-                _append_job_log(job_id, f"ERROR motor-OCR bases: {ocr_err}")
-                raise RuntimeError(f"Bases escaneadas y motor-OCR falló: {ocr_err}") from ocr_err
-
-        _update_job(job_id, progress_pct=75, progress_stage="Analizando requisitos RTM")
-        tdr_result = extraer_bases(full_text, nombre_archivo=bases_path.name, pdf_path=str(bases_path))
-        rtm_personal = tdr_result.get("rtm_personal", [])
-        _append_job_log(job_id, f"TDR completado — {len(rtm_personal)} cargos, {len(tdr_result.get('factores_evaluacion', []))} factores")
+        rtm_personal = tdr_core.get("rtm_personal", [])
+        tdr_result = tdr_core  # alias para compatibilidad debajo
 
         _check_cancelled(job_id)
 
