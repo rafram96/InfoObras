@@ -152,6 +152,7 @@ logging.getLogger().addHandler(_file_handler)
 #     └── motor_ocr.log         (subprocess wrapper)
 # Ver src/api/job_logs.py para detalles.
 from src.api import job_logs as _job_logs_mod
+from src.api import diagnostic as _diag
 from src.api.job_logs import Phase as JobPhase
 
 _JOB_LOGS_DIR = _job_logs_mod.JOB_LOGS_DIR  # alias retrocompat
@@ -618,6 +619,7 @@ def _pipeline_extraccion_profesionales(
     pct_ocr_done: int = 90,
     pct_llm_done: int = 99,
     persist_intermediate: bool = True,
+    called_from: str = "unknown",
 ) -> dict:
     """
     Pipeline IDENTICO para extraction-only y full-job.
@@ -638,6 +640,12 @@ def _pipeline_extraccion_profesionales(
 
     Raises lo que sea que fallen los subprocess/LLM — el caller decide.
     """
+    # Diagnóstico — capturar estado inicial para comparar runs después.
+    _diag_sw = _diag.stopwatch_start()
+    _diag_input = _diag.pdf_fingerprint(pdf_path)
+    _diag_ollama_start = _diag.ollama_state()
+    _diag_env = _diag.relevant_env()
+
     _set_phase(job_id, JobPhase.OCR)
     _update_job(job_id, progress_pct=pct_ocr_start, progress_stage="OCR propuesta")
 
@@ -803,6 +811,32 @@ def _pipeline_extraccion_profesionales(
                 f"Archivos .md no encontrados — extracción LLM omitida",
             )
 
+    # Diagnóstico — capturar estado final y huellas. Útil para comparar
+    # dos runs (mismo PDF: ¿mismo .md? ¿mismo Ollama state al arrancar?).
+    try:
+        extraction_result["_diagnostic"] = {
+            "phase": "extraccion_profesionales",
+            "called_from": called_from,
+            "mode_ocr": mode,
+            "timing": _diag.stopwatch_end(_diag_sw),
+            "env": _diag_env,
+            "input": _diag_input,
+            "ocr_output": {
+                "engine": extraction_result.get("engine"),
+                "total_pages": extraction_result.get("total_pages"),
+                "conf_promedio": extraction_result.get("conf_promedio"),
+                "secciones_count": len(extraction_result.get("secciones", [])),
+                "md_files": _diag.md_files_fingerprint(Path(job_output_dir)),
+            },
+            "llm": {
+                "ollama_state_at_start": _diag_ollama_start,
+                "ollama_state_at_end": _diag.ollama_state(),
+                "calls_dumped": _diag.llm_calls_summary(job_id),
+            },
+        }
+    except Exception as _diag_exc:
+        logger.warning("No se pudo construir _diagnostic profesionales: %s", _diag_exc)
+
     return extraction_result
 
 
@@ -813,6 +847,7 @@ def _pipeline_extraccion_tdr(
     pct_start: int = 3,
     pct_text_done: int = 30,
     pct_llm_done: int = 90,
+    called_from: str = "unknown",
 ) -> dict:
     """
     Pipeline IDENTICO para tdr-only y full-job.
@@ -828,7 +863,14 @@ def _pipeline_extraccion_tdr(
         pct_start: progress al arrancar extraccion de texto
         pct_text_done: progress al terminar texto / arrancar LLM
         pct_llm_done: progress al terminar LLM extraer_bases
+        called_from: "tool" | "pipeline" | "unknown" — para diagnóstico.
     """
+    # Diagnóstico — capturar estado inicial para comparar runs.
+    _diag_sw = _diag.stopwatch_start()
+    _diag_input = _diag.pdf_fingerprint(pdf_path)
+    _diag_ollama_start = _diag.ollama_state()
+    _diag_env = _diag.relevant_env()
+
     _set_phase(job_id, JobPhase.TDR)
     _3layer_active = os.getenv("USE_3LAYER_EXTRACTION", "true").lower() == "true"
     _append_job_log(
@@ -918,6 +960,40 @@ def _pipeline_extraccion_tdr(
         "Job %s (TDR helper): %d cargos, %d factores",
         job_id, result["total_cargos"], result["total_factores"],
     )
+
+    # Diagnóstico — huellas para comparar runs (tool vs pipeline, mismo PDF).
+    try:
+        result["_diagnostic"] = {
+            "phase": "extraccion_tdr",
+            "called_from": called_from,
+            "timing": _diag.stopwatch_end(_diag_sw),
+            "env": _diag_env,
+            "input": _diag_input,
+            "text_extraction": {
+                "num_pages": num_pages,
+                "chars_per_page_avg": int(chars_per_page),
+                "engine_text": (
+                    "motor_ocr" if chars_per_page < 50 else "pdfplumber"
+                ),
+                "full_text_chars": len(full_text),
+            },
+            "ocr_output": {
+                "md_files": _diag.md_files_fingerprint(job_output_dir),
+            },
+            "llm": {
+                "ollama_state_at_start": _diag_ollama_start,
+                "ollama_state_at_end": _diag.ollama_state(),
+                "calls_dumped": _diag.llm_calls_summary(job_id),
+            },
+            "result_counts": {
+                "rtm_personal": len(result["rtm_personal"]),
+                "rtm_postor": len(result["rtm_postor"]),
+                "factores_evaluacion": len(result["factores_evaluacion"]),
+            },
+        }
+    except Exception as _diag_exc:
+        logger.warning("No se pudo construir _diagnostic tdr: %s", _diag_exc)
+
     return result
 
 
@@ -937,6 +1013,7 @@ def _run_job(job_id: str, pdf_path: Path, pages: Optional[list], force_motor_ocr
             job_id, pdf_path, pages, force_motor_ocr,
             pct_ocr_start=1, pct_ocr_done=91, pct_llm_done=99,
             persist_intermediate=True,
+            called_from="tool",
         )
 
         _update_job(
@@ -1072,6 +1149,7 @@ def _run_tdr_job(job_id: str, pdf_path: Path) -> None:
         tdr_core = _pipeline_extraccion_tdr(
             job_id, pdf_path,
             pct_start=3, pct_text_done=30, pct_llm_done=90,
+            called_from="tool",
         )
         result = {"job_type": "tdr", **tdr_core}
 
@@ -1134,6 +1212,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             job_id, pdf_path, pages, force_motor_ocr,
             pct_ocr_start=2, pct_ocr_done=50, pct_llm_done=62,
             persist_intermediate=False,  # full job persiste al final
+            called_from="pipeline",
         )
 
         _check_cancelled(job_id)
@@ -1146,6 +1225,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         tdr_core = _pipeline_extraccion_tdr(
             job_id, bases_path,
             pct_start=63, pct_text_done=67, pct_llm_done=80,
+            called_from="pipeline",
         )
         rtm_personal = tdr_core.get("rtm_personal", [])
         tdr_result = tdr_core  # alias para compatibilidad debajo
@@ -1345,6 +1425,11 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         )
         _append_job_log(job_id, f"Excel generado: {excel_path.name}")
 
+        # Combinar diagnósticos de ambas fases bajo un solo bloque al tope
+        # del result. Pop para que no queden duplicados con los datos.
+        _diag_profesionales = extraction_result.pop("_diagnostic", None)
+        _diag_tdr = tdr_result.pop("_diagnostic", None)
+
         # Resultado final combinado
         result = {
             "job_type": "full",
@@ -1362,6 +1447,14 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
             },
             "cruce_sunat": cruce_sunat_meta,
             "excel_path": str(excel_path),
+            "_diagnostic": {
+                "phase": "full_pipeline",
+                "called_from": "pipeline",
+                "fases": {
+                    "extraccion_profesionales": _diag_profesionales,
+                    "extraccion_tdr": _diag_tdr,
+                },
+            },
         }
 
         _update_job(
@@ -2403,6 +2496,56 @@ async def get_job_bundle(job_id: str):
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="job-{job_id}-bundle.zip"',
+        },
+    )
+
+
+@app.get("/api/jobs/{job_id}/result.json", tags=["Jobs"])
+async def download_job_result_json(job_id: str):
+    """
+    Descarga el campo `result` del job como archivo .json.
+
+    Pensado para comparar runs (tool individual vs pipeline completo): se
+    descargan dos result.json del mismo PDF y se hace diff. El bloque
+    `_diagnostic` que viene dentro identifica si la divergencia es:
+      - en la entrada (input.sha256_16 distinto → no era el mismo PDF)
+      - en el OCR (ocr.md_files[i].sha256_16 distinto → motor-OCR no
+        determinístico)
+      - en Ollama (ollama_state_at_start distinto → modelo cargado distinto)
+      - en el LLM (mismo .md pero distinto resultado → el LLM no determinístico
+        o KV cache contaminado)
+    """
+    from fastapi.responses import Response
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT result, job_type, filename FROM jobs WHERE id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Job no encontrado")
+    result, job_type, filename = row
+    if result is None:
+        raise HTTPException(404, "Job sin resultado disponible (no terminó o falló)")
+
+    # `result` es JSONB en PostgreSQL → puede venir como dict o como str
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            pass
+
+    payload = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    safe_name = (filename or "job").replace("/", "_").replace("\\", "_")
+    download_name = f"result_{job_type or 'unknown'}_{job_id[:8]}_{safe_name}.json"
+
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
         },
     )
 
