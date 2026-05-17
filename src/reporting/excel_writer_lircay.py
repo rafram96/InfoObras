@@ -270,7 +270,7 @@ def _write_requisitos_tdr(
     wb,
     resultados: list[ResultadoProfesional],
     requisitos_rtm_completo: list = None,
-) -> None:
+) -> dict:
     """
     Criterios TDR por cargo (Paso 1).
     Cols 1-6: autogeneradas. Cols 7-10: vacias para input manual del evaluador.
@@ -281,6 +281,24 @@ def _write_requisitos_tdr(
             del TDR que no tienen profesional postulando. Si no se pasa,
             fallback al comportamiento legacy (solo cargos matched a un
             profesional postulado, que pierde cargos sin candidato).
+
+    Salvaguardas (anteriormente droppeaba filas silenciosamente):
+        - Si una fila viene con cargo vacio, se ESCRIBE con placeholder
+          "(CARGO #N - NO EXTRAIDO)" para que el evaluador la vea y arregle.
+        - Si una fila duplica el cargo de otra previa, se ESCRIBE con sufijo
+          "(DUP fila N)" para que sea visible que hubo cross-contamination
+          del extractor en vez de desaparecer.
+
+    Returns:
+        Dict de diagnostico con conteos y razones de filtrado:
+          {
+            "source": "requisitos_rtm_completo" | "resultados_fallback",
+            "cargos_in": int,           # cuantos venian en la fuente
+            "cargos_out": int,          # cuantos se escribieron al Excel
+            "vacios": [{"fila": N, "razon": str}],
+            "duplicados": [{"fila": N, "cargo": str}],
+            "cargos_finales": [str],    # orden de cargos escritos
+          }
     """
     ws = wb.create_sheet("REQUISITOS_TDR")
     headers = [
@@ -299,28 +317,100 @@ def _write_requisitos_tdr(
     _aplicar_header(ws, headers)
     _set_column_widths(ws, [42, 18, 50, 32, 32, 32, 22, 22, 14, 16])
 
-    # Construir lista de requisitos (uno por cargo, sin duplicados).
-    # Preferir la lista completa del TDR si fue pasada; caer al legacy si no.
-    requisitos_vistos = set()
-    requisitos_lista = []
+    diag: dict = {
+        "source": None,
+        "cargos_in": 0,
+        "cargos_out": 0,
+        "vacios": [],
+        "duplicados": [],
+        "cargos_finales": [],
+    }
+
+    # Construir lista (req, display_cargo) preservando vacios y duplicados.
+    # No se descartan filas: las marcamos con placeholder/sufijo para que
+    # el evaluador vea el problema en vez de tener 7 filas donde esperaba 17.
+    items_to_write: list = []
+    requisitos_vistos: set = set()
+
     if requisitos_rtm_completo:
-        for req in requisitos_rtm_completo:
-            if req and req.cargo and req.cargo not in requisitos_vistos:
-                requisitos_vistos.add(req.cargo)
-                requisitos_lista.append(req)
+        diag["source"] = "requisitos_rtm_completo"
+        diag["cargos_in"] = len(requisitos_rtm_completo)
+        for i, req in enumerate(requisitos_rtm_completo, start=1):
+            if not req:
+                diag["vacios"].append({"fila": i, "razon": "req_es_None"})
+                items_to_write.append((None, f"(FILA #{i} - SIN DATOS)"))
+                continue
+            cargo_raw = (req.cargo or "").strip()
+            if not cargo_raw:
+                diag["vacios"].append({"fila": i, "razon": "cargo_vacio"})
+                items_to_write.append((req, f"(CARGO #{i} - NO EXTRAIDO)"))
+                continue
+            if cargo_raw in requisitos_vistos:
+                diag["duplicados"].append({"fila": i, "cargo": cargo_raw})
+                items_to_write.append((req, f"{cargo_raw} (DUP fila {i})"))
+                continue
+            requisitos_vistos.add(cargo_raw)
+            items_to_write.append((req, cargo_raw))
+            diag["cargos_finales"].append(cargo_raw)
     else:
+        diag["source"] = "resultados_fallback"
         for rp in resultados:
             req = rp.requisito
-            if req and req.cargo and req.cargo not in requisitos_vistos:
-                requisitos_vistos.add(req.cargo)
-                requisitos_lista.append(req)
+            if not req:
+                continue
+            diag["cargos_in"] += 1
+            cargo_raw = (req.cargo or "").strip()
+            prof_nombre = getattr(rp.profesional, "name", "?")
+            if not cargo_raw:
+                diag["vacios"].append({"profesional": prof_nombre, "razon": "cargo_vacio"})
+                items_to_write.append((req, f"(CARGO - sin extraer - {prof_nombre})"))
+                continue
+            if cargo_raw in requisitos_vistos:
+                diag["duplicados"].append({"profesional": prof_nombre, "cargo": cargo_raw})
+                items_to_write.append((req, f"{cargo_raw} (DUP - {prof_nombre})"))
+                continue
+            requisitos_vistos.add(cargo_raw)
+            items_to_write.append((req, cargo_raw))
+            diag["cargos_finales"].append(cargo_raw)
+
+    diag["cargos_out"] = len(items_to_write)
+
+    # Log a stdout/file logger para que aparezca en el job log
+    logger.info(
+        "[excel-lircay] REQUISITOS_TDR: source=%s in=%d out=%d vacios=%d dups=%d",
+        diag["source"], diag["cargos_in"], diag["cargos_out"],
+        len(diag["vacios"]), len(diag["duplicados"]),
+    )
+    if diag["vacios"]:
+        logger.warning(
+            "[excel-lircay] REQUISITOS_TDR filas con cargo vacio: %s",
+            diag["vacios"],
+        )
+    if diag["duplicados"]:
+        logger.warning(
+            "[excel-lircay] REQUISITOS_TDR cargos duplicados: %s",
+            diag["duplicados"],
+        )
 
     fila = 2
-    for idx, req in enumerate(requisitos_lista, start=1):
+    for idx, (req, display_cargo) in enumerate(items_to_write, start=1):
+        if req is None:
+            # Sin datos — placeholder solo en col 1
+            ws.cell(row=fila, column=1, value=f"{idx}. {display_cargo}")
+            for col in range(1, 11):
+                c = ws.cell(row=fila, column=col)
+                c.alignment = _CELL_ALIGN_TOP
+                c.border = _BORDER
+                if col >= 7:
+                    c.fill = _FILL_AZUL_SUAVE
+            ws.row_dimensions[fila].height = 60
+            fila += 1
+            continue
 
-        # Col 1: cargo + profesion
+        # Col 1: cargo + profesion (cargo usa display_cargo, NO req.cargo,
+        # para preservar el marker de placeholder o DUP)
         profs_str = " y/o ".join(req.profesiones_aceptadas or []) or ""
-        cargo_profesion = f"{idx}. {req.cargo}"
+        cargo_profesion = f"{idx}. {display_cargo}"
         if profs_str:
             cargo_profesion += f"\n{profs_str}"
         ws.cell(row=fila, column=1, value=cargo_profesion)
@@ -371,6 +461,8 @@ def _write_requisitos_tdr(
         fila += 1
 
     ws.freeze_panes = "B2"
+
+    return diag
 
 
 # ============================================================================
@@ -856,6 +948,8 @@ def write_report_lircay(
     filename: str = "",
     sunat_por_ruc: Optional[dict] = None,
     requisitos_rtm_completo: Optional[list] = None,
+    *,
+    out_diagnostic: Optional[dict] = None,
 ) -> Path:
     """
     Genera el Excel con formato Lircay (5 hojas).
@@ -874,6 +968,11 @@ def write_report_lircay(
                        TODOS los cargos del TDR — incluso los que no tienen
                        profesional postulando. Si no, fallback a derivar de
                        resultados (que pierde cargos sin candidato).
+        out_diagnostic: dict opcional que se POBLA in-place con metadatos
+                       del writer (counts, drops, fuente usada). Util para
+                       inyectarlo en _diagnostic.fases.excel_writer del job
+                       y diagnosticar "el TDR tenia 17 cargos pero el Excel
+                       muestra 7".
 
     Returns:
         Path al archivo Excel generado.
@@ -893,12 +992,23 @@ def write_report_lircay(
     paleta_idx: dict[str, int] = {}
 
     _write_profesionales(wb, resultados)
-    _write_requisitos_tdr(wb, resultados, requisitos_rtm_completo)
+    diag_tdr = _write_requisitos_tdr(wb, resultados, requisitos_rtm_completo)
     _write_bd_experiencias(
         wb, resultados, proposal_date, sunat_por_ruc, paleta_idx,
     )
     _write_analisis_rtm(wb, resultados, paleta_idx)
     _write_resumen(wb, resultados, proposal_date, filename)
+
+    if out_diagnostic is not None:
+        out_diagnostic["requisitos_rtm_completo_pasado"] = bool(requisitos_rtm_completo)
+        out_diagnostic["requisitos_rtm_completo_len"] = (
+            len(requisitos_rtm_completo) if requisitos_rtm_completo else 0
+        )
+        out_diagnostic["resultados_count"] = len(resultados)
+        out_diagnostic["evaluaciones_count"] = sum(
+            len(r.evaluaciones) for r in resultados
+        )
+        out_diagnostic["requisitos_tdr"] = diag_tdr
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

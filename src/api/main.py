@@ -1417,13 +1417,25 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
         excel_dir.mkdir(parents=True, exist_ok=True)
         excel_path = excel_dir / f"evaluacion_{job_id}.xlsx"
 
+        # Diagnóstico del writer — captura conteos por hoja para detectar
+        # "17 cargos TDR en memoria pero 7 en el Excel" sin re-correr el job.
+        writer_diag: dict = {}
         write_report_lircay(
             resultados=resultados_eval, output_path=excel_path,
             proposal_date=_date.today(), filename=pdf_path.name,
             sunat_por_ruc=sunat_por_ruc,
             requisitos_rtm_completo=requisitos_rtm_completo_full,
+            out_diagnostic=writer_diag,
         )
         _append_job_log(job_id, f"Excel generado: {excel_path.name}")
+        _tdr_diag = writer_diag.get("requisitos_tdr") or {}
+        _append_job_log(
+            job_id,
+            f"Excel REQUISITOS_TDR: source={_tdr_diag.get('source')} "
+            f"in={_tdr_diag.get('cargos_in')} out={_tdr_diag.get('cargos_out')} "
+            f"vacios={len(_tdr_diag.get('vacios', []))} "
+            f"dups={len(_tdr_diag.get('duplicados', []))}",
+        )
 
         # Combinar diagnósticos de ambas fases bajo un solo bloque al tope
         # del result. Pop para que no queden duplicados con los datos.
@@ -1453,6 +1465,7 @@ def _run_full_job(job_id: str, pdf_path: Path, bases_path: Path, pages: Optional
                 "fases": {
                     "extraccion_profesionales": _diag_profesionales,
                     "extraccion_tdr": _diag_tdr,
+                    "excel_writer": writer_diag,
                 },
             },
         }
@@ -1955,6 +1968,7 @@ async def evaluate_job(
     excel_dir.mkdir(parents=True, exist_ok=True)
     excel_path = excel_dir / f"evaluacion_{extraction_job_id}.xlsx"
 
+    writer_diag: dict = {}
     write_report_lircay(
         resultados=resultados,
         output_path=excel_path,
@@ -1962,6 +1976,7 @@ async def evaluate_job(
         filename=ext_row.get("filename", ""),
         sunat_por_ruc=sunat_por_ruc,
         requisitos_rtm_completo=requisitos_rtm_completo,
+        out_diagnostic=writer_diag,
     )
 
     # Resumen
@@ -1978,6 +1993,7 @@ async def evaluate_job(
         "excel_path": str(excel_path),
         "download_url": f"/api/jobs/{extraction_job_id}/excel",
         "cruce_sunat": cruce_sunat_meta,
+        "writer_diagnostic": writer_diag,
     }
 
 
