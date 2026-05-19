@@ -998,6 +998,34 @@ def _pipeline_extraccion_tdr(
         logger.warning("[lexico_osce] fallo (degradacion elegante): %s", exc)
         _diag_lexico = {"_error": str(exc)}
 
+    # Per-fila quality + de-cross-contamination (Fase 2.B).
+    # Score cada fila + limpia cross-contam masiva en tiempo_adicional_factores.
+    _diag_per_fila = {"_skipped": True}
+    try:
+        from src.tdr.extractor.per_fila_picker import validar_y_limpiar_rtm
+        rtm_actual = tdr_result.get("rtm_personal", [])
+        if rtm_actual:
+            rtm_validado, _diag_per_fila = validar_y_limpiar_rtm(rtm_actual)
+            tdr_result["rtm_personal"] = rtm_validado
+            _tiempo_anulados = len(
+                (_diag_per_fila.get("cross_contam_tiempo_adicional") or {})
+                .get("filas_anuladas", [])
+            )
+            _desc_flag = len(
+                (_diag_per_fila.get("descripciones_sospechosas") or {})
+                .get("filas_flageadas", [])
+            )
+            _append_job_log(
+                job_id,
+                f"Per-fila: score prom {_diag_per_fila.get('score_promedio')}, "
+                f"{_diag_per_fila.get('filas_baja_calidad')} baja calidad, "
+                f"{_tiempo_anulados} tiempo_adicional anulados, "
+                f"{_desc_flag} descripciones flageadas",
+            )
+    except Exception as exc:
+        logger.warning("[per_fila_picker] fallo (degradacion elegante): %s", exc)
+        _diag_per_fila = {"_error": str(exc)}
+
     result = {
         "rtm_personal": tdr_result.get("rtm_personal", []),
         "rtm_postor": tdr_result.get("rtm_postor", []),
@@ -1032,6 +1060,7 @@ def _pipeline_extraccion_tdr(
                 "full_text_chars": len(full_text),
                 "ocr_cleaner": _diag_ocr_cleaner,
                 "lexico_osce": _diag_lexico,
+                "per_fila_picker": _diag_per_fila,
             },
             "ocr_output": {
                 "md_files": _diag.md_files_fingerprint(job_output_dir),
