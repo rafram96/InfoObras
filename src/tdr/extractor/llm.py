@@ -12,6 +12,7 @@ from openai import OpenAI
 from src.tdr.config.settings import (
     QWEN_OLLAMA_BASE_URL, QWEN_OLLAMA_API_KEY,
     QWEN_MODEL, QWEN_MAX_TOKENS, QWEN_TIMEOUT, QWEN_NUM_CTX,
+    OLLAMA_SEED,
 )
 from src.tdr.config.signals import PROMPTS
 from src.tdr.extractor.scorer import Block
@@ -386,7 +387,7 @@ def reextraer_profesiones_b1(texto_fuente: str, items: list) -> dict[int, list[s
             max_tokens=QWEN_MAX_TOKENS,
             extra_body={
                 "keep_alive": "10m",
-                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
+                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX, "seed": OLLAMA_SEED},
             },
         )
         elapsed = time.perf_counter() - t0
@@ -495,7 +496,7 @@ def retry_cargos_faltantes(
             max_tokens=QWEN_MAX_TOKENS,
             extra_body={
                 "keep_alive": "10m",
-                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
+                "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX, "seed": OLLAMA_SEED},
             },
         )
         elapsed = time.perf_counter() - t0
@@ -643,6 +644,8 @@ def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
                     # que trunca prompts largos silenciosamente → causa principal
                     # de alucinaciones en tablas TDR multi-pagina.
                     "num_ctx": QWEN_NUM_CTX,
+                    # Seed fijo para que Ollama sea determinístico con temp=0.
+                    "seed": OLLAMA_SEED,
                 },
             },
         )

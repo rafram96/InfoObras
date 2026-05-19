@@ -25,6 +25,7 @@ from src.tdr.config.settings import (
     QWEN_MAX_TOKENS,
     QWEN_TIMEOUT,
     QWEN_NUM_CTX,
+    OLLAMA_SEED,
 )
 
 logger = logging.getLogger(__name__)
@@ -267,7 +268,7 @@ def _build_extra_body() -> dict:
     return {
         "format": "json",
         "keep_alive": "10m",
-        "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX},
+        "options": {"num_gpu": 99, "num_ctx": QWEN_NUM_CTX, "seed": OLLAMA_SEED},
     }
 
 

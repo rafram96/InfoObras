@@ -19,6 +19,7 @@ from src.tdr.config.settings import (
     QWEN_VL_MODEL,
     QWEN_VL_TIMEOUT,
     OLLAMA_BASE_URL,
+    OLLAMA_SEED,
     TABLE_VL_MAX_PX,
 )
 
@@ -136,6 +137,7 @@ def _llamar_qwen_vl(
             "temperature": 0,
             "num_predict": 2048,
             "num_ctx": 8192,
+            "seed": OLLAMA_SEED,
         },
     }
 

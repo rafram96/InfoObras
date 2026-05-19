@@ -31,6 +31,11 @@ QWEN_TIMEOUT         = int(os.getenv("QWEN_TIMEOUT", "300"))
 #   - Si hay OOM (out of memory en GPU): bajar a 8192
 # Override via env: QWEN_NUM_CTX=16384 (por si quieres subir sin tocar codigo)
 QWEN_NUM_CTX         = int(os.getenv("QWEN_NUM_CTX", "12288"))
+# Seed fijo para determinismo end-to-end. Con temperature=0 Ollama es greedy
+# pero no estrictamente reproducible entre sesiones por orden de batching y
+# KV cache. Pasando seed -> mismo prompt = misma respuesta byte-a-byte.
+# Override via env OLLAMA_SEED si necesitas explorar respuestas alternativas.
+OLLAMA_SEED          = int(os.getenv("OLLAMA_SEED", "42"))
 
 # ── Qwen VL (lectura visual de tablas) ──────────────────────────────────────
 QWEN_VL_MODEL   = os.getenv("QWEN_VL_MODEL", "qwen2.5vl:7b")

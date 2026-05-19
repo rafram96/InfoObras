@@ -28,6 +28,10 @@ DEFAULT_TIMEOUT = int(os.getenv("QWEN_TIMEOUT", "300"))
 DEFAULT_MAX_RETRIES = int(os.getenv("EXTRACTION_MAX_RETRIES", "3"))
 DEFAULT_BACKOFF = int(os.getenv("EXTRACTION_BACKOFF", "15"))
 DEFAULT_NUM_CTX = int(os.getenv("EXTRACTION_NUM_CTX", os.getenv("QWEN_NUM_CTX", "16384")))
+# Seed fijo para que Ollama sea determinístico con temperature=0. Sin seed,
+# greedy decoding puede producir tokens distintos entre sesiones por orden de
+# batching/KV cache. Mismo prompt -> misma respuesta. Override via OLLAMA_SEED.
+DEFAULT_SEED = int(os.getenv("OLLAMA_SEED", "42"))
 DUMP_FAILED_PROMPTS = os.getenv(
     "EXTRACTION_DUMP_FAILED_PROMPTS", "true"
 ).lower() == "true"
@@ -84,6 +88,7 @@ def call_llm(
         "options": {
             "temperature": 0,
             "num_ctx": DEFAULT_NUM_CTX,
+            "seed": DEFAULT_SEED,
         },
     }
 
