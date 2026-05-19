@@ -46,6 +46,11 @@ _RELEVANT_ENV_VARS = (
     "PDFPLUMBER_CHARS_THRESHOLD",
     "FORCE_MOTOR_OCR",
     "OLLAMA_BASE_URL",
+    # Seed para determinismo del LLM (Bloque 1). Si no esta definido el codigo
+    # usa default=42 hardcoded en src/tdr/config/settings.py y
+    # src/extraction/ollama_client.py. Que aparezca aqui permite verificar
+    # de un vistazo si el seed esta activo en runs futuros.
+    "OLLAMA_SEED",
 )
 
 
