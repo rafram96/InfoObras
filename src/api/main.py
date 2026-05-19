@@ -90,13 +90,20 @@ try:
         QWEN_MODEL as _STARTUP_QWEN_MODEL,
         QWEN_NUM_CTX as _STARTUP_NUM_CTX,
         QWEN_VL_MODEL as _STARTUP_QWEN_VL_MODEL,
+        OLLAMA_SEED as _STARTUP_OLLAMA_SEED,
     )
     _vl_flag = os.getenv("USE_VL_TDR_EXTRACTION", "false").lower() == "true"
     _force_ocr = os.getenv("FORCE_MOTOR_OCR", "false").lower() == "true"
+    _seed_env_raw = os.getenv("OLLAMA_SEED")
+    _seed_origin = (
+        f".env={_seed_env_raw}" if _seed_env_raw is not None
+        else ".env=no definido, usando default"
+    )
     print("=" * 70)
     print(f"  QWEN_MODEL              = {_STARTUP_QWEN_MODEL}")
     print(f"  QWEN_NUM_CTX            = {_STARTUP_NUM_CTX}")
     print(f"  QWEN_VL_MODEL           = {_STARTUP_QWEN_VL_MODEL}")
+    print(f"  OLLAMA_SEED             = {_STARTUP_OLLAMA_SEED} ({_seed_origin})")
     print(f"  .env QWEN_MODEL         = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
     print(f"  .env QWEN_NUM_CTX       = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
     print(f"  USE_VL_TDR_EXTRACTION   = {'TRUE (VL activo)' if _vl_flag else 'false (pipeline textual)'}")
