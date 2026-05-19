@@ -222,51 +222,116 @@ def corregir_cargo_completo(cargo: str, threshold: int = 88) -> tuple[str, bool]
     return cargo, False
 
 
-def corregir_palabra_cargo(palabra: str, threshold: int = 85) -> tuple[str, bool]:
+# ============================================================================
+# Diccionario de typos conocidos — mapeo EXACTO (seguro)
+# ============================================================================
+# Solo mapeos donde estamos 100% seguros: la palabra de la izquierda NO existe
+# como palabra valida y la de la derecha es la correccion obvia.
+# Lookup case-insensitive y sin tildes via _normalizar.
+# El reemplazo preserva el case del original (helper _aplicar_case_estilo).
+
+KNOWN_TYPOS_EXACTOS: dict[str, str] = {
+    # OCR drops de letras
+    "responsale":  "Responsable",
+    "supervisn":   "Supervisión",
+    "supervisin":  "Supervisión",
+    "construccin": "Construcción",
+    "ejecucin":    "Ejecución",
+    "evaluacin":   "Evaluación",
+    "contratacin": "Contratación",
+    "gestin":      "Gestión",
+    "tecnico":     "Técnico",
+    # OCR confusion entre A/Á y G/D
+    "metragos":    "METRADOS",
+    "metrgos":     "METRADOS",
+    # Letras pegadas (espacio perdido)
+    "deconstruccion": "de Construcción",
+    "yejecucion":  "y ejecución",
+    "yejecución":  "y ejecución",
+}
+
+
+def _aplicar_case_estilo(canonico: str, original: str) -> str:
     """
-    Corrige UNA palabra de un cargo contra PALABRAS_CARGO_CANONICAS.
-    Usado para arreglar 'METRÁGOS' -> 'METRADOS' en cargos compuestos
-    cuando el cargo completo no matchea ningun canonico entero.
+    Ajusta `canonico` al estilo de case de `original`:
+    - Si original es TODO MAYUSCULAS -> canonico todo mayusculas
+    - Si original es todo minusculas -> canonico todo minusculas
+    - Si original es Title Case -> canonico title case
+    - Mixed/otros -> canonico tal cual
+
+    Preserva tildes del canonico siempre.
     """
-    if not palabra or not palabra.strip():
+    if not original:
+        return canonico
+    if original.isupper():
+        return canonico.upper()
+    if original.islower():
+        return canonico.lower()
+    # Title case: primera mayuscula, resto minuscula (palabra por palabra)
+    if original.split() and all(
+        w[0].isupper() and w[1:].islower() if len(w) > 1 else w.isupper()
+        for w in original.split() if w
+    ):
+        return canonico.title()
+    return canonico
+
+
+def corregir_typo_conocido(palabra: str) -> tuple[str, bool]:
+    """
+    Si la palabra (normalizada) esta en KNOWN_TYPOS_EXACTOS, devuelve
+    la correccion preservando case del original. Si no, retorna sin tocar.
+
+    Esto es SEGURO porque solo aplica a typos donde la palabra original
+    no es un termino castellano valido.
+    """
+    # Separar puntuacion trailing/leading para no corromperla
+    m = re.match(r"^([^\w]*)(.*?)([^\w]*)$", palabra)
+    if not m:
         return palabra, False
-    # Solo intentar correccion si la palabra parece "tecnica" (>4 chars)
-    # Palabras cortas (y, o, de, en) NO necesitan correccion.
-    if len(palabra.strip()) < 5:
+    prefix, core, suffix = m.groups()
+    if not core:
         return palabra, False
-    canonico = _fuzzy_best_match(palabra, _PALABRAS_CARGO_NORM, threshold)
-    if canonico and _normalizar(palabra) != _normalizar(canonico):
-        return canonico, True
+
+    core_norm = _normalizar(core)
+    if core_norm in KNOWN_TYPOS_EXACTOS:
+        canonico = KNOWN_TYPOS_EXACTOS[core_norm]
+        core_corregido = _aplicar_case_estilo(canonico, core)
+        return f"{prefix}{core_corregido}{suffix}", True
     return palabra, False
 
 
-def corregir_cargo_palabra_por_palabra(cargo: str) -> tuple[str, list[str]]:
+def corregir_cargo_completo_solo(cargo: str) -> tuple[str, list[str]]:
     """
-    Para un cargo, intenta primero matchear el FULL string contra CARGOS_OSCE_COMPLETOS.
-    Si no, descompone en palabras y corrige cada una contra PALABRAS_CARGO_CANONICAS.
+    Version conservadora (hotfix Fase 2.1):
 
-    Returns:
-        (cargo_corregido, lista_de_correcciones_aplicadas)
+    1. Aplica correccion de typos conocidos palabra-por-palabra (seguro: solo
+       mapeos exactos para typos no-ambiguos como 'Responsale' -> 'Responsable').
+    2. Intenta UN match completo del cargo (frase entera) contra
+       CARGOS_OSCE_COMPLETOS. Si matchea con high confidence, reemplaza.
+    3. NO hace fuzzy match palabra-por-palabra (causaba regresiones tipo
+       'Estructural' -> 'ESTRUCTURAS' o 'COSTOS,' -> 'COSTOS').
+
+    Returns (cargo_corregido, lista_de_cambios).
     """
     correcciones = []
 
-    # Intento 1: match completo del cargo
-    nuevo, fue = corregir_cargo_completo(cargo)
-    if fue:
-        correcciones.append(f"{cargo!r} -> {nuevo!r} (match completo)")
-        return nuevo, correcciones
-
-    # Intento 2: palabra por palabra
+    # Paso 1: typos conocidos palabra-por-palabra (preserva puntuacion + case)
     palabras = cargo.split()
-    palabras_corregidas = []
+    palabras_arregladas = []
     for p in palabras:
-        nueva_p, fue = corregir_palabra_cargo(p)
-        if fue:
-            correcciones.append(f"{p!r} -> {nueva_p!r}")
-        # Preservar el case original cuando hicimos correccion ligera
-        palabras_corregidas.append(nueva_p)
+        nueva_p, fue_typo = corregir_typo_conocido(p)
+        if fue_typo:
+            correcciones.append(f"typo: {p!r} -> {nueva_p!r}")
+        palabras_arregladas.append(nueva_p)
+    cargo_post_typos = " ".join(palabras_arregladas)
 
-    return " ".join(palabras_corregidas), correcciones
+    # Paso 2: match COMPLETO contra catalogo (no palabra por palabra)
+    canonico, fue = corregir_cargo_completo(cargo_post_typos, threshold=92)
+    if fue:
+        correcciones.append(f"full: {cargo_post_typos!r} -> {canonico!r}")
+        return canonico, correcciones
+
+    return cargo_post_typos, correcciones
 
 
 # ============================================================================
@@ -298,9 +363,10 @@ def corregir_rtm_personal(rtm_personal: list[dict]) -> tuple[list[dict], dict]:
     }
 
     for i, row in enumerate(rtm_corregido):
-        # 1. Cargo principal
+        # 1. Cargo principal — version conservadora: solo typos conocidos
+        # + match completo. NO mas word-by-word fuzzy (causaba regresiones).
         cargo_orig = row.get("cargo", "")
-        cargo_nuevo, cambios = corregir_cargo_palabra_por_palabra(cargo_orig)
+        cargo_nuevo, cambios = corregir_cargo_completo_solo(cargo_orig)
         if cambios:
             row["cargo"] = cargo_nuevo
             row["_cargo_original"] = cargo_orig
@@ -309,7 +375,8 @@ def corregir_rtm_personal(rtm_personal: list[dict]) -> tuple[list[dict], dict]:
                 {"fila": i + 1, "campo": "cargo", "cambios": cambios}
             )
 
-        # 2. Profesiones aceptadas
+        # 2. Profesiones aceptadas — full-string fuzzy match contra
+        # PROFESIONES_CANONICAS (seguro, no word-by-word).
         profs = row.get("profesiones_aceptadas") or []
         profs_corregidas = []
         cambios_profs = []
@@ -325,14 +392,15 @@ def corregir_rtm_personal(rtm_personal: list[dict]) -> tuple[list[dict], dict]:
                 {"fila": i + 1, "campo": "profesiones_aceptadas", "cambios": cambios_profs}
             )
 
-        # 3. Cargos similares validos
+        # 3. Cargos similares — version conservadora.
+        # Solo typos conocidos + match completo. NO word-by-word fuzzy.
         exp_min = row.get("experiencia_minima")
         if isinstance(exp_min, dict):
             cargos_sim = exp_min.get("cargos_similares_validos") or []
             cargos_sim_corregidos = []
             cambios_sim = []
             for c in cargos_sim:
-                nuevo, _cambios = corregir_cargo_palabra_por_palabra(c)
+                nuevo, _cambios = corregir_cargo_completo_solo(c)
                 if _cambios:
                     cambios_sim.extend([f"sim: {chg}" for chg in _cambios])
                     diag["cargos_similares_corregidos"] += 1
