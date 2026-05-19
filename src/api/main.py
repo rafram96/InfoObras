@@ -100,12 +100,15 @@ try:
         else ".env=no definido, usando default"
     )
     _json_schema = os.getenv("USE_JSON_SCHEMA", "true").lower() == "true"
+    _self_heal = os.getenv("USE_SELF_HEALING", "true").lower() == "true"
+    _self_heal_max = os.getenv("SELF_HEALING_MAX_FILAS", "10")
     print("=" * 70)
     print(f"  QWEN_MODEL              = {_STARTUP_QWEN_MODEL}")
     print(f"  QWEN_NUM_CTX            = {_STARTUP_NUM_CTX}")
     print(f"  QWEN_VL_MODEL           = {_STARTUP_QWEN_VL_MODEL}")
     print(f"  OLLAMA_SEED             = {_STARTUP_OLLAMA_SEED} ({_seed_origin})")
     print(f"  USE_JSON_SCHEMA         = {'TRUE (schema enforcement activo)' if _json_schema else 'false (json plano)'}")
+    print(f"  USE_SELF_HEALING        = {'TRUE (max ' + _self_heal_max + ' filas/job)' if _self_heal else 'false (desactivado)'}")
     print(f"  .env QWEN_MODEL         = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
     print(f"  .env QWEN_NUM_CTX       = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
     print(f"  USE_VL_TDR_EXTRACTION   = {'TRUE (VL activo)' if _vl_flag else 'false (pipeline textual)'}")
@@ -1026,6 +1029,33 @@ def _pipeline_extraccion_tdr(
         logger.warning("[per_fila_picker] fallo (degradacion elegante): %s", exc)
         _diag_per_fila = {"_error": str(exc)}
 
+    # Self-healing retry per fila incompleta (Fase 3.D).
+    # Detecta filas con profesiones <=1 o cargos_similares <=2 y re-extrae
+    # con LLM focused solo en esa fila. Mergea quedandose con la version
+    # mas completa.
+    _diag_self_healing = {"_skipped": True}
+    try:
+        from src.tdr.extractor.self_healing import aplicar_self_healing
+        rtm_actual = tdr_result.get("rtm_personal", [])
+        if rtm_actual:
+            rtm_curado, _diag_self_healing = aplicar_self_healing(
+                rtm_personal=rtm_actual,
+                full_text=full_text,
+            )
+            tdr_result["rtm_personal"] = rtm_curado
+            if _diag_self_healing.get("filas_reextraidas"):
+                _append_job_log(
+                    job_id,
+                    f"Self-healing: {_diag_self_healing['filas_detectadas_incompletas']} "
+                    f"incompletas detectadas, {_diag_self_healing['filas_reextraidas']} "
+                    f"re-extraidas, {_diag_self_healing['filas_mejoradas']} mejoradas, "
+                    f"{_diag_self_healing['filas_sin_mejora']} sin cambio, "
+                    f"{_diag_self_healing['filas_llm_fallidas']} fallaron LLM",
+                )
+    except Exception as exc:
+        logger.warning("[self_healing] fallo (degradacion elegante): %s", exc)
+        _diag_self_healing = {"_error": str(exc)}
+
     result = {
         "rtm_personal": tdr_result.get("rtm_personal", []),
         "rtm_postor": tdr_result.get("rtm_postor", []),
@@ -1061,6 +1091,7 @@ def _pipeline_extraccion_tdr(
                 "ocr_cleaner": _diag_ocr_cleaner,
                 "lexico_osce": _diag_lexico,
                 "per_fila_picker": _diag_per_fila,
+                "self_healing": _diag_self_healing,
             },
             "ocr_output": {
                 "md_files": _diag.md_files_fingerprint(job_output_dir),
