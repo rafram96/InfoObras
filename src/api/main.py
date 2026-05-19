@@ -975,6 +975,29 @@ def _pipeline_extraccion_tdr(
             pdf_path=str(pdf_path),
         )
 
+    # Post-procesamiento canonico OSCE (Fase 2.C).
+    # Corrige typos de OCR + LLM contra catalogo OSCE estandar:
+    # 'METRÁGOS' -> 'METRADOS', 'Responsale' -> 'Responsable', etc.
+    _diag_lexico = {"_skipped": True}
+    try:
+        from src.tdr.extractor.lexico_osce import corregir_rtm_personal
+        rtm_orig = tdr_result.get("rtm_personal", [])
+        if rtm_orig:
+            rtm_corregido, _diag_lexico = corregir_rtm_personal(rtm_orig)
+            tdr_result["rtm_personal"] = rtm_corregido
+            if _diag_lexico.get("cargos_corregidos") or \
+               _diag_lexico.get("profesiones_corregidas") or \
+               _diag_lexico.get("cargos_similares_corregidos"):
+                _append_job_log(
+                    job_id,
+                    f"Lexico OSCE: {_diag_lexico['cargos_corregidos']} cargos / "
+                    f"{_diag_lexico['profesiones_corregidas']} profesiones / "
+                    f"{_diag_lexico['cargos_similares_corregidos']} sim corregidos",
+                )
+    except Exception as exc:
+        logger.warning("[lexico_osce] fallo (degradacion elegante): %s", exc)
+        _diag_lexico = {"_error": str(exc)}
+
     result = {
         "rtm_personal": tdr_result.get("rtm_personal", []),
         "rtm_postor": tdr_result.get("rtm_postor", []),
@@ -1008,6 +1031,7 @@ def _pipeline_extraccion_tdr(
                 ),
                 "full_text_chars": len(full_text),
                 "ocr_cleaner": _diag_ocr_cleaner,
+                "lexico_osce": _diag_lexico,
             },
             "ocr_output": {
                 "md_files": _diag.md_files_fingerprint(job_output_dir),
