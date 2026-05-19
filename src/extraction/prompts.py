@@ -10,6 +10,12 @@ Del texto OCR a continuación extrae la información del profesional propuesto.
 
 CARGO ESPERADO: {cargo}
 
+REGLAS DURAS — VIOLAR CUALQUIERA DE ESTAS ES ERROR GRAVE:
+1. "nombre" NUNCA puede estar vacío. Si no encuentras nombre claro, transcribe el texto más cercano a "identificado con DNI" o "el suscrito".
+2. La "profesion" debe ser TÍTULO COMPLETO ("Ingeniero Civil", "Arquitecto"), nunca categoría vaga sola ("Ingeniero" sin especialidad). Si solo encuentras "Ingeniero", déjalo como "Ingeniero" pero marca implícitamente que es incompleto.
+3. Si detectas errores de OCR obvios (letras pegadas como "deCampo", palabras truncadas como "Responsale"), LIMPIA antes de devolver. El OCR es ruidoso; tu trabajo incluye repararlo cuando el error es evidente.
+4. Si el "registro_colegio" parece tener más de 7 dígitos, probablemente NO es un registro de colegio (los CIP/CAP tienen 4-6 dígitos) — devuelve null en ese caso.
+
 INSTRUCCIONES:
 - nombre: nombre completo de la persona. Búscalo en la declaración jurada (empieza con "Yo [NOMBRE] identificado...") o en los certificados ("Certificamos que el Ing./Arq. [NOMBRE]..."). Máximo 80 caracteres.
 - dni: número de DNI de 8 dígitos
@@ -44,6 +50,13 @@ Del texto OCR a continuación extrae TODOS los certificados o constancias de exp
 Los certificados son documentos emitidos por empresas o consorcios que acreditan que el profesional trabajó en un proyecto.
 
 PROFESIONAL: {nombre}
+
+REGLAS DURAS — VIOLAR CUALQUIERA DE ESTAS ES ERROR GRAVE:
+1. Para CADA certificado, el campo "proyecto" NUNCA puede estar vacío. Si no detectas un nombre de proyecto claro, transcribe el texto que sigue al verbo de inicio ("Mejoramiento de...", "Construcción de...", "Supervisión de la obra...").
+2. NUNCA dos experiencias distintas del mismo profesional pueden tener TODOS los campos idénticos (proyecto + fechas + empresa). Si te pasa, es duplicado por error de copia — re-lee el texto, son experiencias DIFERENTES.
+3. Las fechas deben mantener el formato del documento original ("15/03/2020", "Lima, 25 de junio del 2021"). NO inventes fechas ni las "normalices" a un formato distinto del texto.
+4. El "ruc" debe tener exactamente 11 dígitos. Si encuentras un número de 8 dígitos, eso es DNI, NO RUC — devuelve null en ruc.
+5. Extrae TODAS las experiencias del texto, no resumas ni omitas. Si el texto contiene 8 certificados, devuelve 8 entradas, no 4 ni 5.
 
 INSTRUCCIONES campo por campo:
 - proyecto: nombre completo del proyecto de obra (empieza con verbos como "Mejoramiento", "Construcción", "Supervisión de la obra", etc.)

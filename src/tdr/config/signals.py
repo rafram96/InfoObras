@@ -189,6 +189,37 @@ PROMPT_RTM_PERSONAL = """
 Eres un extractor de datos de bases de concurso público peruano (OSCE).
 Responde SOLO con JSON válido, sin explicaciones. /no_think
 
+REGLAS DURAS — VIOLAR CUALQUIERA DE ESTAS ES ERROR GRAVE:
+
+1. El campo "cargo" NUNCA puede estar vacío ("") ni ser null. Si para una fila
+   no detectas un cargo claro, transcribe el texto MÁS CERCANO al número de
+   fila correspondiente. Mejor un cargo aproximado que vacío.
+
+2. NUNCA dos filas distintas pueden terminar con EL MISMO "cargo". Si te
+   pasa, es porque copiaste el cargo de una fila vecina por error — re-lee
+   con cuidado, cada fila tiene su propio cargo único.
+
+3. El campo "tipo_obra_valido" debe ser la frase COMPLETA tal como aparece
+   en las bases. Ejemplos correctos: "establecimientos de salud", "edificación
+   educativa". Ejemplos INCORRECTOS: "salud" (incompleto), "educación"
+   (incompleto). Si el texto dice "establecimientos de salud", escribe la
+   frase entera, no abrevies a la palabra clave.
+
+4. Las listas ("profesiones_aceptadas", "cargos_similares_validos") deben
+   contener TODOS los elementos mencionados en el texto, sin resumir ni
+   omitir. Si el texto enumera 8 cargos, la lista debe tener 8 entradas,
+   no 4 ni 5.
+
+5. Si detectas en el texto OCR caracteres claramente erróneos (números
+   colgados al final como "ELECTROMECANICAS 75", letras pegadas como
+   "deConstruccion", o palabras truncadas como "Responsale" en vez de
+   "Responsable"), LIMPIA estos errores antes de devolverlos en el JSON.
+   El texto OCR es ruidoso — tu trabajo incluye repararlo cuando sea obvio.
+
+6. El número de filas extraídas debe coincidir con el número de filas que
+   tiene la tabla B.1 del documento. Si la tabla tiene 17 filas, devuelve
+   17 entradas en "personal_clave". NO inventes filas extra ni omitas filas.
+
 REGLA CRÍTICA:
 - Si el texto NO contiene NINGUNA información sobre personal clave (ni cargos, ni profesiones,
   ni experiencia), responde: {{"personal_clave": []}}
@@ -339,6 +370,18 @@ Responde SOLO con JSON válido, sin explicaciones. /no_think
 
 Analiza el siguiente texto y extrae los factores de evaluación.
 Enfócate en puntajes, criterios y metodología de asignación.
+
+REGLAS DURAS — VIOLAR CUALQUIERA DE ESTAS ES ERROR GRAVE:
+
+1. El campo "factor" NUNCA puede estar vacío. Si no detectas un nombre
+   claro, transcribe el encabezado más cercano de la sección.
+
+2. NUNCA dos factores distintos pueden tener EL MISMO "factor" — son
+   factores distintos, deben tener nombres distintos.
+
+3. La "metodologia" debe ser una descripción completa, no resumen vago
+   de una línea. Si el texto detalla los criterios por tramos de
+   puntaje, transcríbelos enteros.
 
 REGLA CRÍTICA:
 - Solo extrae factores que tengan un PUNTAJE MÁXIMO explícito (ej: "60 puntos", "5 puntos").
