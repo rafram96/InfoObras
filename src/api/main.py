@@ -940,6 +940,28 @@ def _pipeline_extraccion_tdr(
                 f"PDF de bases escaneado y motor-OCR falló: {ocr_err}"
             ) from ocr_err
 
+    # Pre-limpieza del texto OCR antes de pasarlo al extractor (Fase 1.A).
+    # Aplica reglas genericas (camel pegado, y/o pegado, smart quotes, etc.)
+    # que NO dependen del contenido del PDF — funciona para cualquier TDR.
+    try:
+        from src.tdr.extractor.ocr_cleaner import limpiar_md_ocr
+        full_text_pre = full_text
+        full_text = limpiar_md_ocr(full_text)
+        _diag_ocr_cleaner = {
+            "chars_antes": len(full_text_pre),
+            "chars_despues": len(full_text),
+            "diff": len(full_text) - len(full_text_pre),
+        }
+        _append_job_log(
+            job_id,
+            f"OCR cleaner: {_diag_ocr_cleaner['chars_antes']} -> "
+            f"{_diag_ocr_cleaner['chars_despues']} chars "
+            f"(diff {_diag_ocr_cleaner['diff']:+d})",
+        )
+    except Exception as exc:
+        logger.warning("[ocr_cleaner] fallo (degradacion elegante): %s", exc)
+        _diag_ocr_cleaner = {"_error": str(exc)}
+
     _update_job(job_id, progress_pct=pct_text_done, progress_stage="Analizando requisitos TDR")
     _append_job_log(job_id, "Llamando a extraer_bases()...")
 
@@ -983,6 +1005,7 @@ def _pipeline_extraccion_tdr(
                     "motor_ocr" if chars_per_page < 50 else "pdfplumber"
                 ),
                 "full_text_chars": len(full_text),
+                "ocr_cleaner": _diag_ocr_cleaner,
             },
             "ocr_output": {
                 "md_files": _diag.md_files_fingerprint(job_output_dir),
