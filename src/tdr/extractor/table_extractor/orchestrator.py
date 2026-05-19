@@ -18,6 +18,8 @@ La logica de fallback se basa en metricas concretas:
 """
 from __future__ import annotations
 import logging
+import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,72 @@ from src.tdr.extractor.table_extractor.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Helpers de normalizacion y union de listas ───────────────────────────────
+
+def _clave_normalizada(s: str) -> str:
+    """
+    Normaliza un string para comparacion de duplicados:
+    - lowercase
+    - sin tildes (NFD + filtrar combining chars)
+    - colapsa whitespace
+    - strip de puntuacion final (.,;: y similares)
+
+    Devuelve la clave de comparacion. NO altera el string original.
+    """
+    if not s:
+        return ""
+    s_norm = unicodedata.normalize("NFD", s)
+    s_norm = "".join(c for c in s_norm if not unicodedata.combining(c))
+    s_norm = s_norm.lower()
+    s_norm = re.sub(r"\s+", " ", s_norm).strip()
+    s_norm = s_norm.rstrip(".,;:")
+    return s_norm
+
+
+def _union_listas_preservando_orden(
+    primaria: list[str] | None,
+    secundaria: list[str] | None,
+) -> list[str]:
+    """
+    Une dos listas de strings preservando case/spelling originales,
+    eliminando duplicados por comparacion normalizada (lowercase + sin tildes
+    + whitespace colapsado).
+
+    Estrategia:
+    - Comienza con todos los items de `primaria` (en su orden, sin duplicados internos)
+    - Agrega items de `secundaria` que no esten ya presentes
+    - Preserva el string original (case, tildes) del primer match encontrado
+
+    Util para mergear extracciones de distintas capas sin que la mas corta
+    sobrescriba a la mas completa.
+    """
+    primaria = primaria or []
+    secundaria = secundaria or []
+
+    resultado: list[str] = []
+    claves_vistas: set[str] = set()
+
+    for s in primaria:
+        if not isinstance(s, str):
+            continue
+        clave = _clave_normalizada(s)
+        if not clave or clave in claves_vistas:
+            continue
+        resultado.append(s)
+        claves_vistas.add(clave)
+
+    for s in secundaria:
+        if not isinstance(s, str):
+            continue
+        clave = _clave_normalizada(s)
+        if not clave or clave in claves_vistas:
+            continue
+        resultado.append(s)
+        claves_vistas.add(clave)
+
+    return resultado
 
 
 # ── Heuristicas de aceptacion de capa ────────────────────────────────────────
@@ -250,13 +318,22 @@ def mergear_con_pipeline_textual(
     Mergea las filas extraidas por el pipeline 3-capas con los items
     del pipeline textual existente (extraccion LLM tradicional).
 
-    Estrategia:
-    - Si el pipeline 3-capas tiene una fila con numero_fila N que
-      coincide con un item del pipeline textual, REEMPLAZA los campos
-      profesiones_aceptadas, cargos_similares_validos, tipo_obra_valido
-      del item textual con los del 3-capas (mas precisos por construccion).
+    Estrategia (Fase 3 — union de listas, no override):
+    - Si el pipeline 3-capas tiene una fila con numero_fila N que coincide
+      con un item del pipeline textual, UNE las listas profesiones_aceptadas
+      y cargos_similares_validos (textual primero — tiende a ser mas completo —
+      luego items adicionales del 3-capas que no esten ya presentes).
+      La dedup se hace por clave normalizada (lowercase + sin tildes) pero
+      se preserva el case/spelling original.
+    - tipo_obra_valido y cantidad/unidad: solo se completan si el textual los
+      tiene vacios (3-capas como fallback, no como override).
     - Si una fila solo aparece en 3-capas, se agrega a la lista.
     - Si solo aparece en textual, se mantiene.
+
+    Motivacion: antes esto era OVERRIDE — la lista del 3-capas (a menudo mas
+    corta porque el LLM filtraba items "vagos") sobrescribia la del textual
+    aunque el textual tuviera la extraccion completa. Con UNION ya no perdemos
+    items por culpa del filtro conservador de capas posteriores.
 
     Returns:
         (items_mergeados, diagnostico_merge)
@@ -267,6 +344,8 @@ def mergear_con_pipeline_textual(
         "items_actualizados": 0,
         "items_agregados": 0,
         "items_solo_textuales": 0,
+        "items_con_union_profesiones": 0,
+        "items_con_union_cargos": 0,
     }
 
     # Indexar por numero_fila
@@ -292,23 +371,44 @@ def mergear_con_pipeline_textual(
         fila_3capas = por_numero_3capas.get(n)
 
         if item_textual and fila_3capas:
-            # Mergear: 3-capas tiene precedencia para campos estructurales
+            # Mergear: UNION de listas (textual primero, 3-capas como complemento)
             item = dict(item_textual)
-            if fila_3capas.profesiones_aceptadas:
-                item["profesiones_aceptadas"] = fila_3capas.profesiones_aceptadas
-            if fila_3capas.experiencia_minima.cargos_similares_validos:
-                exp = item.get("experiencia_minima") or {}
-                if not isinstance(exp, dict):
-                    exp = {}
-                exp["cargos_similares_validos"] = (
-                    fila_3capas.experiencia_minima.cargos_similares_validos
-                )
-                if fila_3capas.experiencia_minima.cantidad and not exp.get("cantidad"):
-                    exp["cantidad"] = fila_3capas.experiencia_minima.cantidad
-                    exp["unidad"] = "meses"
+
+            # profesiones_aceptadas — union preservando orden del textual
+            prof_textual = item.get("profesiones_aceptadas") or []
+            prof_3capas = fila_3capas.profesiones_aceptadas or []
+            if prof_textual or prof_3capas:
+                prof_unidas = _union_listas_preservando_orden(prof_textual, prof_3capas)
+                if prof_unidas:
+                    item["profesiones_aceptadas"] = prof_unidas
+                    if len(prof_unidas) > len(prof_textual):
+                        diag["items_con_union_profesiones"] += 1
+
+            # cargos_similares_validos — mismo patron, dentro de experiencia_minima
+            exp = item.get("experiencia_minima") or {}
+            if not isinstance(exp, dict):
+                exp = {}
+            cargos_textual = exp.get("cargos_similares_validos") or []
+            cargos_3capas = fila_3capas.experiencia_minima.cargos_similares_validos or []
+            if cargos_textual or cargos_3capas:
+                cargos_unidos = _union_listas_preservando_orden(cargos_textual, cargos_3capas)
+                if cargos_unidos:
+                    exp["cargos_similares_validos"] = cargos_unidos
+                    if len(cargos_unidos) > len(cargos_textual):
+                        diag["items_con_union_cargos"] += 1
+
+            # cantidad/unidad — 3-capas como fallback (no override)
+            if fila_3capas.experiencia_minima.cantidad and not exp.get("cantidad"):
+                exp["cantidad"] = fila_3capas.experiencia_minima.cantidad
+                exp["unidad"] = "meses"
+
+            if exp:
                 item["experiencia_minima"] = exp
+
+            # tipo_obra_valido — 3-capas como fallback (no override)
             if fila_3capas.tipo_obra_valido and not item.get("tipo_obra_valido"):
                 item["tipo_obra_valido"] = fila_3capas.tipo_obra_valido
+
             item["_fuente_extraccion"] = f"merge:textual+{fila_3capas.fuente}"
             items_mergeados.append(item)
             diag["items_actualizados"] += 1
