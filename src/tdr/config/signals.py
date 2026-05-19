@@ -271,13 +271,42 @@ NO TRAIGAS PROFESIONES DE OTRAS FILAS:
 - Ejemplo erróneo: poner "Tecnólogo Médico" en COMUNICACIONES. Tecnólogo Médico
   está en la fila de EQUIPAMIENTO HOSPITALARIO, NO en COMUNICACIONES.
 
-REGLA DE RELLENO — LISTA NEGRA:
-Si no hay datos claros en el texto, **responde con lista vacía**. Está PROHIBIDO generar
-items con profesiones como esta lista vaga:
+REGLA ANTI-ALUCINACIÓN (distincion CRUCIAL):
+
+NO INVENTES profesiones o cargos. Si el texto no los menciona, devuelve lista vacía.
+Específicamente, NO inventes la lista vaga:
   ["Ingeniero", "Supervisor", "Especialista", "Jefe", "Responsable"]
-ni con cargos_similares_validos iguales a esa misma lista. Ese patrón repetitivo es
-alucinación — solo extrae las profesiones/cargos EXACTOS que aparecen en el texto.
-Si dudas entre "inventar algo razonable" o "dejar vacío", SIEMPRE elige dejar vacío.
+ni profesiones repetitivas genéricas si NO aparecen literalmente en el texto.
+
+PERO ATENCIÓN — caso CRÍTICO de los TDRs OSCE:
+
+La columna "TRABAJOS O PRESTACIONES" de la tabla B.2 frecuentemente lista esa
+misma estructura LITERALMENTE en el texto. Ejemplo real de un TDR:
+
+  "Ingeniero y/o Especialista y/o Supervisor y/o Jefe y/o Responsable y/o
+   Coordinador y/o inspector y/o ambientalista o la Combinación de estos
+   en/de: Ambiental y/o Medio Ambiente y/o ..."
+
+Cuando esto pasa, DEBES extraer LOS 8 cargos (los roles ANTES del "en/de:")
+en cargos_similares_validos. NO los suprimas pensando que son alucinación —
+están EN EL TEXTO y son la respuesta correcta.
+
+Regla operativa: si una palabra/profesión APARECE LITERALMENTE en el texto
+de la fila, EXTRÁELA aunque coincida con la "lista vaga" prohibida. La regla
+anti-alucinación SOLO aplica cuando inventarías items que NO están en el texto.
+
+CONTRAEJEMPLOS — qué NO hacer:
+- Texto: "Ingeniero y/o Especialista y/o Supervisor ... ambientalista en/de:
+  Ambiental..." → INCORRECTO devolver solo ["ambientalista"]. CORRECTO devolver
+  los 8 cargos.
+- Texto: "Especialista en estructuras y/o jefe de estructuras y/o Ingeniero
+  Estructural" → CORRECTO devolver esos 3, INCORRECTO inflar a 8 genéricos.
+- Texto sin tabla B.2 visible → CORRECTO devolver [], INCORRECTO inventar
+  la lista vaga.
+
+Si dudas entre "extraer todo lo que veo en el texto" o "dejar vacío por
+miedo a alucinar", elige EXTRAER cuando los items aparecen literalmente.
+La supresión injustificada cuesta tanto como la alucinación.
 
 Una profesión aceptada válida es la palabra exacta después de "Título profesional:",
 "Profesión:", "Formación:" o columnas similares (como "Arquitecto", "Ingeniero Civil",
