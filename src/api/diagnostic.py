@@ -54,11 +54,6 @@ _RELEVANT_ENV_VARS = (
     # Toggle de JSON schema constraint (Fase 1.F). "true" por default; si
     # Ollama es vieja o el schema rompe el LLM, setear "false" en .env.
     "USE_JSON_SCHEMA",
-    # Toggle de self-healing retry para filas incompletas (Fase 3.D).
-    # "true" por default; setear "false" en .env para desactivar.
-    "USE_SELF_HEALING",
-    # Limite de filas re-extraidas por self-healing (cap de costo LLM).
-    "SELF_HEALING_MAX_FILAS",
 )
 
 
