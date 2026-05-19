@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -16,6 +17,11 @@ from src.tdr.config.settings import (
 )
 from src.tdr.config.signals import PROMPTS
 from src.tdr.extractor.scorer import Block
+from src.tdr.extractor.json_schemas import SCHEMAS_POR_BLOCK_TYPE
+
+# Toggle global para JSON schema mode (Fase 1.F).
+# USE_JSON_SCHEMA=false en .env desactiva el schema y cae a "json" plano.
+_USE_JSON_SCHEMA = os.getenv("USE_JSON_SCHEMA", "true").lower() == "true"
 
 logger = logging.getLogger(__name__)
 
@@ -628,6 +634,26 @@ def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
             f"Ollama truncara. Considerar subir QWEN_NUM_CTX o reducir el bloque."
         )
 
+    # Schema opcional segun block_type (Fase 1.F).
+    # Si Ollama es vieja, dejar USE_JSON_SCHEMA=false en .env.
+    schema = SCHEMAS_POR_BLOCK_TYPE.get(block.block_type) if _USE_JSON_SCHEMA else None
+    extra_body_base: dict = {
+        "keep_alive": "10m",
+        "options": {
+            "num_gpu": 99,
+            # Ventana de contexto completa. Default de Ollama es 4096 tok
+            # que trunca prompts largos silenciosamente → causa principal
+            # de alucinaciones en tablas TDR multi-pagina.
+            "num_ctx": QWEN_NUM_CTX,
+            # Seed fijo para que Ollama sea determinístico con temp=0.
+            "seed": OLLAMA_SEED,
+        },
+    }
+    if schema is not None:
+        # Ollama soporta "format" como JSON schema en su API nativa. Lo
+        # pasamos via extra_body para que llegue tal cual al endpoint.
+        extra_body_base["format"] = schema
+
     try:
         client = _get_client()
         t0 = time.perf_counter()
@@ -636,18 +662,7 @@ def _extraer_bloque_impl(block: Block) -> tuple[Optional[dict], dict]:
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=QWEN_MAX_TOKENS,
-            extra_body={
-                "keep_alive": "10m",
-                "options": {
-                    "num_gpu": 99,
-                    # Ventana de contexto completa. Default de Ollama es 4096 tok
-                    # que trunca prompts largos silenciosamente → causa principal
-                    # de alucinaciones en tablas TDR multi-pagina.
-                    "num_ctx": QWEN_NUM_CTX,
-                    # Seed fijo para que Ollama sea determinístico con temp=0.
-                    "seed": OLLAMA_SEED,
-                },
-            },
+            extra_body=extra_body_base,
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:

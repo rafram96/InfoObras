@@ -6,10 +6,19 @@ Paso 3: lista de experiencias (certificados)
 Incluye validación de schema, normalización de campos y filtro
 de páginas irrelevantes (contratos, resoluciones, SEACE).
 """
+import os
 import re
 from src.extraction.models import ProfessionalBlock
 from src.extraction.ollama_client import call_llm
 from src.extraction.prompts import PASO2_PROMPT, PASO3_PROMPT
+from src.extraction.schemas import PASO2_SCHEMA, PASO3_SCHEMA
+
+# Toggle global para JSON schema mode de Ollama (Fase 1.F).
+# Si Ollama es vieja (<0.5) o el schema esta roto, el usuario puede
+# desactivar con USE_JSON_SCHEMA=false en .env y caer a "json" plano.
+_USE_JSON_SCHEMA = os.getenv("USE_JSON_SCHEMA", "true").lower() == "true"
+_SCHEMA_P2 = PASO2_SCHEMA if _USE_JSON_SCHEMA else None
+_SCHEMA_P3 = PASO3_SCHEMA if _USE_JSON_SCHEMA else None
 
 _MAX_TEXT_CHARS = 40_000
 
@@ -619,7 +628,7 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
     prompt = PASO2_PROMPT.format(cargo=block.cargo, texto=texto)
 
     for intento in range(1, 3):  # máximo 2 intentos de validación
-        result = call_llm(prompt)
+        result = call_llm(prompt, schema=_SCHEMA_P2)
         if _validar_paso2(result):
             break
         if intento < 2:
@@ -631,7 +640,7 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
             texto_fb = _filtrar_paginas(block.block_texts[0])[:_MAX_TEXT_CHARS]
             print(f" [fallback bloque 0]", end="", flush=True)
             prompt_fb = PASO2_PROMPT.format(cargo=block.cargo, texto=texto_fb)
-            result_fb = call_llm(prompt_fb)
+            result_fb = call_llm(prompt_fb, schema=_SCHEMA_P2)
             if _validar_paso2(result_fb):
                 result = result_fb
             else:
@@ -642,7 +651,7 @@ def extract_professional_info(block: ProfessionalBlock) -> dict:
             if texto_completo != texto:
                 print(f" [fallback texto completo]", end="", flush=True)
                 prompt_fb = PASO2_PROMPT.format(cargo=block.cargo, texto=texto_completo)
-                result_fb = call_llm(prompt_fb)
+                result_fb = call_llm(prompt_fb, schema=_SCHEMA_P2)
                 if _validar_paso2(result_fb):
                     result = result_fb
                 else:
@@ -673,7 +682,7 @@ def _extraer_experiencias_de_texto(texto: str, professional_name: str) -> dict |
     """
     prompt = PASO3_PROMPT.format(nombre=professional_name, texto=texto)
     for intento in range(1, 3):
-        result = call_llm(prompt)
+        result = call_llm(prompt, schema=_SCHEMA_P3)
         if _validar_paso3(result):
             return _normalizar_paso3(result)
         if intento < 2:

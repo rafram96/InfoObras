@@ -51,6 +51,9 @@ _RELEVANT_ENV_VARS = (
     # src/extraction/ollama_client.py. Que aparezca aqui permite verificar
     # de un vistazo si el seed esta activo en runs futuros.
     "OLLAMA_SEED",
+    # Toggle de JSON schema constraint (Fase 1.F). "true" por default; si
+    # Ollama es vieja o el schema rompe el LLM, setear "false" en .env.
+    "USE_JSON_SCHEMA",
 )
 
 

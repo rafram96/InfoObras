@@ -99,11 +99,13 @@ try:
         f".env={_seed_env_raw}" if _seed_env_raw is not None
         else ".env=no definido, usando default"
     )
+    _json_schema = os.getenv("USE_JSON_SCHEMA", "true").lower() == "true"
     print("=" * 70)
     print(f"  QWEN_MODEL              = {_STARTUP_QWEN_MODEL}")
     print(f"  QWEN_NUM_CTX            = {_STARTUP_NUM_CTX}")
     print(f"  QWEN_VL_MODEL           = {_STARTUP_QWEN_VL_MODEL}")
     print(f"  OLLAMA_SEED             = {_STARTUP_OLLAMA_SEED} ({_seed_origin})")
+    print(f"  USE_JSON_SCHEMA         = {'TRUE (schema enforcement activo)' if _json_schema else 'false (json plano)'}")
     print(f"  .env QWEN_MODEL         = {os.getenv('QWEN_MODEL', '(no definido — usando default)')}")
     print(f"  .env QWEN_NUM_CTX       = {os.getenv('QWEN_NUM_CTX', '(no definido — usando default)')}")
     print(f"  USE_VL_TDR_EXTRACTION   = {'TRUE (VL activo)' if _vl_flag else 'false (pipeline textual)'}")

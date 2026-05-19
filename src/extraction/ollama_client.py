@@ -66,6 +66,7 @@ def call_llm(
     model: str = DEFAULT_MODEL,
     timeout: int = None,
     max_retries: int = None,
+    schema: dict | None = None,
 ) -> dict:
     """
     Llama al LLM y retorna el JSON parseado.
@@ -73,6 +74,13 @@ def call_llm(
     Lanza RuntimeError si agota todos los intentos. En ese caso, dumpea
     el prompt a data/logs/extraction_failures/ para diagnostico posterior
     (controlable via env EXTRACTION_DUMP_FAILED_PROMPTS=false).
+
+    Args:
+        schema: JSON Schema opcional. Si se pasa, Ollama FUERZA al modelo
+            a generar output que cumple el schema (campos requeridos,
+            minLength, types, etc.). Requiere Ollama >= 0.5. Si Ollama
+            es vieja, esta call retornara error y se cae a "json" plano
+            en el siguiente intento. None = format json plano (default).
     """
     # Lectura tardia para que respete env vars actualizadas en runtime
     if timeout is None:
@@ -80,10 +88,14 @@ def call_llm(
     if max_retries is None:
         max_retries = DEFAULT_MAX_RETRIES
 
+    # Si se paso schema, Ollama lo usa como restriccion de decoding.
+    # Si no, "json" plano = solo garantiza JSON valido pero sin structure.
+    format_param = schema if schema is not None else "json"
+
     payload = {
         "model": model,
         "prompt": prompt,
-        "format": "json",
+        "format": format_param,
         "stream": False,
         "options": {
             "temperature": 0,
