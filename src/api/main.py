@@ -1026,6 +1026,21 @@ def _pipeline_extraccion_tdr(
         logger.warning("[per_fila_picker] fallo (degradacion elegante): %s", exc)
         _diag_per_fila = {"_error": str(exc)}
 
+    # Capturar diagnostico del merge 3-capas (exfiltrado desde pipeline.py).
+    # El merge ocurre DENTRO de extraer_bases asi que necesitamos sacarlo
+    # del result dict via la clave privada _diag_merge_3layer.
+    _diag_merge = tdr_result.pop("_diag_merge_3layer", {"_skipped": True})
+    if isinstance(_diag_merge, dict) and not _diag_merge.get("_skipped") and not _diag_merge.get("_error"):
+        _union_prof = _diag_merge.get("items_con_union_profesiones", 0)
+        _union_cargos = _diag_merge.get("items_con_union_cargos", 0)
+        if _union_prof or _union_cargos:
+            _append_job_log(
+                job_id,
+                f"Merge 3-capas: {_diag_merge.get('items_actualizados', 0)} actualizados, "
+                f"{_union_prof} filas con union de profesiones, "
+                f"{_union_cargos} filas con union de cargos",
+            )
+
     result = {
         "rtm_personal": tdr_result.get("rtm_personal", []),
         "rtm_postor": tdr_result.get("rtm_postor", []),
@@ -1061,6 +1076,7 @@ def _pipeline_extraccion_tdr(
                 "ocr_cleaner": _diag_ocr_cleaner,
                 "lexico_osce": _diag_lexico,
                 "per_fila_picker": _diag_per_fila,
+                "merge_3layer": _diag_merge,
             },
             "ocr_output": {
                 "md_files": _diag.md_files_fingerprint(job_output_dir),

@@ -1798,14 +1798,21 @@ def extraer_bases(
                 resultado["rtm_personal"], extraccion_3capas,
             )
             resultado["rtm_personal"] = items_merged
+            # Exfiltrar diagnostico para que main.py lo inyecte en _diagnostic.
+            # Clave con guion bajo => privada, main.py la pop-ea antes de devolver.
+            resultado["_diag_merge_3layer"] = diag_merge
             logger.info(
-                "[pipeline] Merge 3-LAYER: actualizados=%d, agregados=%d, solo_textuales=%d",
+                "[pipeline] Merge 3-LAYER: actualizados=%d, agregados=%d, "
+                "solo_textuales=%d, union_prof=%d, union_cargos=%d",
                 diag_merge.get("items_actualizados", 0),
                 diag_merge.get("items_agregados", 0),
                 diag_merge.get("items_solo_textuales", 0),
+                diag_merge.get("items_con_union_profesiones", 0),
+                diag_merge.get("items_con_union_cargos", 0),
             )
         except Exception as e:
             logger.warning("[pipeline] Merge 3-LAYER fallo: %s", e)
+            resultado["_diag_merge_3layer"] = {"_error": str(e)}
 
     # ── Merge con datos VL estructurados (si USE_VL_TDR_EXTRACTION activa, legacy) ──
     # Los datos VL son mas confiables en layout de tabla (no sufre cross-fila)
