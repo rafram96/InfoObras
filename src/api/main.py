@@ -1015,12 +1015,17 @@ def _pipeline_extraccion_tdr(
                 (_diag_per_fila.get("descripciones_sospechosas") or {})
                 .get("filas_flageadas", [])
             )
+            _topico_extraneo = len(
+                (_diag_per_fila.get("descripcion_topico_extraneo") or {})
+                .get("filas_flageadas", [])
+            )
             _append_job_log(
                 job_id,
                 f"Per-fila: score prom {_diag_per_fila.get('score_promedio')}, "
                 f"{_diag_per_fila.get('filas_baja_calidad')} baja calidad, "
                 f"{_tiempo_anulados} tiempo_adicional anulados, "
-                f"{_desc_flag} descripciones flageadas",
+                f"{_desc_flag} descripciones flageadas, "
+                f"{_topico_extraneo} topicos extraneos",
             )
     except Exception as exc:
         logger.warning("[per_fila_picker] fallo (degradacion elegante): %s", exc)

@@ -24,10 +24,36 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections import Counter
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _normalizar_texto(s: str) -> str:
+    """Lowercase + sin tildes + colapsa whitespace. Para comparacion."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _tokenizar(s: str) -> list[str]:
+    """
+    Tokenizacion para conteo de frecuencias en descripciones.
+    - Normaliza (lowercase + sin tildes)
+    - Separa por non-alfanum (preserva tokens cortos tipo "BIM", "PMA", "QA", "QC")
+    - Filtra tokens de 1-2 chars (solo se quedan los de >=3)
+    """
+    if not s:
+        return []
+    s_norm = _normalizar_texto(s)
+    tokens = re.findall(r"[a-z0-9]+", s_norm)
+    return [t for t in tokens if len(t) >= 3]
 
 
 # ============================================================================
@@ -275,6 +301,165 @@ def _detectar_descripcion_cruzada(
 
 
 # ============================================================================
+# Detector de descripcion con topico extraneo al cargo (Fase 2.B+)
+# ============================================================================
+
+# Roles genericos Lista_A OSCE (aparecen en cualquier descripcion Form B,
+# no aportan senal de topico)
+_ROLES_GENERICOS_LISTA_A = frozenset({
+    "ingeniero", "especialista", "supervisor", "jefe", "responsable",
+    "coordinador", "gerente", "analista", "inspector", "asistente",
+    "arquitecto", "tecnico", "profesional", "director", "residente",
+    "ambientalista",
+})
+
+# Stopwords + conectores OSCE estandar (siempre presentes en Form B)
+_STOPWORDS_OSCE = frozenset({
+    # Conectores espanol
+    "los", "las", "del", "para", "con", "por", "este", "esta", "estos",
+    "estas", "una", "uno", "que", "como", "sus", "sin", "mas", "muy",
+    "fue", "ser", "son", "han", "haya", "hayan", "sea", "sean",
+    # Conectores Form B
+    "combinacion", "mismas", "mismos", "misma", "mismo",
+    # Contexto OSCE-obras universal (aparece en TODAS las descripciones)
+    "supervision", "ejecucion", "obra", "obras", "construccion",
+    "proyecto", "proyectos", "especialidad", "subspecialidad",
+    "subespecialidad", "edificaciones", "afines", "establecimientos",
+    "salud", "consultoria",
+})
+
+
+def _detectar_descripcion_topico_extraneo(
+    rtm_personal: list[dict],
+    freq_minima: int = 3,
+    longitud_minima_token: int = 3,
+) -> tuple[list[dict], dict]:
+    """
+    Detecta filas cuya descripcion tiene un TOPICO DOMINANTE extraneo al cargo.
+
+    Caso de uso: el LLM extrae para la fila 14 ("ESPECIALISTA EN COSTOS,
+    METRADOS Y VALORIZACIONES") una descripcion sobre BIM ("...en/de: BIM,
+    BIM Manager y/o BIM y/o Gestion de Proyectos con BIM y/o Revit..."),
+    copiada por error de la fila 16 ("ESPECIALISTA EN BIM").
+
+    Estrategia:
+    1. Tokenizar la descripcion (sin tildes, lowercase, len>=3).
+    2. Filtrar stopwords + roles genericos Lista_A OSCE + contexto OSCE
+       universal (supervision, ejecucion, obras, etc.).
+    3. Contar frecuencias. Tomar tokens con freq >= freq_minima.
+    4. Para cada token frecuente: si NO aparece en el cargo NI en los
+       cargos_similares_validos de la fila => candidato a topico extraneo.
+    5. Senal fuerte: si el topico extraneo aparece textualmente en el cargo
+       de OTRA fila del rtm_personal, es casi seguro cross-fila completo.
+
+    Flag conservador: anota `_topico_dominante_extraneo` en la fila con
+    `{topico, freq, fila_origen}`. NO elimina la descripcion ni cambia el
+    cargo — solo flaguea para que el analista revise.
+
+    Returns (rtm_modificado, diag).
+    """
+    diag = {
+        "filas_flageadas": [],         # solo cross-fila confirmado (senal fuerte)
+        "filas_candidatas_soft": [],   # token frecuente extraneo pero sin cross-fila
+        "freq_minima": freq_minima,
+    }
+
+    if not rtm_personal:
+        return rtm_personal, diag
+
+    # Indexar cargos normalizados para detectar cross-fila completa
+    cargos_norm_por_indice: dict[int, str] = {}
+    cargos_tokens_por_indice: dict[int, set[str]] = {}
+    for i, r in enumerate(rtm_personal):
+        cargo = r.get("cargo") or ""
+        cargo_norm = _normalizar_texto(cargo)
+        cargos_norm_por_indice[i] = cargo_norm
+        cargos_tokens_por_indice[i] = set(_tokenizar(cargo_norm))
+
+    for i, r in enumerate(rtm_personal):
+        exp_min = r.get("experiencia_minima") or {}
+        descripcion = exp_min.get("descripcion") or ""
+        if not descripcion or not isinstance(descripcion, str):
+            continue
+
+        tokens = _tokenizar(descripcion)
+        if not tokens:
+            continue
+
+        # Whitelist: tokens del cargo propio + cargos_similares propios
+        propios_tokens: set[str] = set(cargos_tokens_por_indice[i])
+        cargos_sim = exp_min.get("cargos_similares_validos") or []
+        for cs in cargos_sim:
+            if isinstance(cs, str):
+                propios_tokens.update(_tokenizar(cs))
+
+        # Contar frecuencias filtrando stopwords + roles genericos + propios
+        contador = Counter()
+        for t in tokens:
+            if len(t) < longitud_minima_token:
+                continue
+            if t in _STOPWORDS_OSCE or t in _ROLES_GENERICOS_LISTA_A:
+                continue
+            if t in propios_tokens:
+                continue
+            contador[t] += 1
+
+        # Topicos extraneos: tokens frecuentes que NO estan en el cargo propio
+        # ni en sus cargos_similares
+        extraneos = [
+            (token, freq) for token, freq in contador.most_common()
+            if freq >= freq_minima
+        ]
+        if not extraneos:
+            continue
+
+        # Para cada extraneo, verificar si coincide con el cargo de OTRA fila
+        flags_para_fila = []
+        for token, freq in extraneos[:3]:  # max 3 topicos por fila
+            fila_origen = None
+            for j, otros_tokens in cargos_tokens_por_indice.items():
+                if j == i:
+                    continue
+                if token in otros_tokens:
+                    fila_origen = {
+                        "fila": j + 1,
+                        "cargo": rtm_personal[j].get("cargo"),
+                    }
+                    break
+            flags_para_fila.append({
+                "topico": token,
+                "freq": freq,
+                "fila_origen_probable": fila_origen,
+            })
+
+        if not flags_para_fila:
+            continue
+
+        # Solo anotamos la fila si HAY cross-fila confirmado (senal fuerte).
+        # Sin cross-fila, "ambiental" en una fila MEDIO AMBIENTE sale candidato
+        # porque "ambiental" != "ambiente" literalmente, pero claramente NO es
+        # contaminacion. Lo guardamos solo en diag para auditoria.
+        flags_fuertes = [f for f in flags_para_fila if f["fila_origen_probable"]]
+
+        if flags_fuertes:
+            r["_topico_dominante_extraneo"] = flags_fuertes
+            diag["filas_flageadas"].append({
+                "fila": i + 1,
+                "cargo": r.get("cargo"),
+                "topicos": [f["topico"] for f in flags_fuertes],
+                "fila_origen_probable": flags_fuertes[0]["fila_origen_probable"],
+            })
+        else:
+            diag["filas_candidatas_soft"].append({
+                "fila": i + 1,
+                "cargo": r.get("cargo"),
+                "topicos": [f["topico"] for f in flags_para_fila],
+            })
+
+    return rtm_personal, diag
+
+
+# ============================================================================
 # API publica
 # ============================================================================
 
@@ -320,18 +505,25 @@ def validar_y_limpiar_rtm(
     rtm_copia, diag_tiempo = _detectar_cross_contam_tiempo_adicional(rtm_copia)
     diag_full["cross_contam_tiempo_adicional"] = diag_tiempo
 
-    # 3. Flagear descripciones sospechosas
+    # 3. Flagear descripciones sospechosas (palabras compartidas con otros cargos)
     rtm_copia, diag_desc = _detectar_descripcion_cruzada(rtm_copia)
     diag_full["descripciones_sospechosas"] = diag_desc
 
+    # 4. Flagear descripciones con topico dominante extraneo al cargo
+    #    (caso fila COSTOS con descripcion sobre BIM, o similar cross-fila completo)
+    rtm_copia, diag_topico = _detectar_descripcion_topico_extraneo(rtm_copia)
+    diag_full["descripcion_topico_extraneo"] = diag_topico
+
     logger.info(
         "[per-fila] %d filas, score prom %.1f, %d baja calidad, "
-        "%d tiempo_adicional anulados, %d descripciones flageadas",
+        "%d tiempo_adicional anulados, %d descripciones flageadas, "
+        "%d topicos extraneos",
         diag_full["filas"],
         diag_full["score_promedio"],
         diag_full["filas_baja_calidad"],
         len(diag_tiempo["filas_anuladas"]),
         len(diag_desc["filas_flageadas"]),
+        len(diag_topico["filas_flageadas"]),
     )
 
     return rtm_copia, diag_full
